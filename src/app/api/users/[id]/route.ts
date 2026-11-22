@@ -14,16 +14,27 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   await dbConnect();
   const body = await req.json();
-  const update: Record<string, unknown> = {};
-  if (typeof body.name === 'string') update.name = body.name;
-  if (typeof body.phone === 'string') update.phone = body.phone;
-  if (typeof body.active === 'boolean') update.active = body.active;
+
+  // Load the document and use .save() so the pre-save hash hook fires when
+  // the password is changed. findByIdAndUpdate bypasses mongoose middleware,
+  // which would store the password in plaintext and break all logins.
+  const user = await User.findById(params.id);
+  if (!user) return fail('User not found', 404);
+
+  if (typeof body.name === 'string') {
+    const trimmed = body.name.trim();
+    if (trimmed.length === 0) return fail('Name cannot be empty', 422);
+    user.name = trimmed;
+  }
+  if (typeof body.phone === 'string') user.phone = body.phone.trim();
+  if (typeof body.active === 'boolean') user.active = body.active;
   if (typeof body.password === 'string' && body.password.length >= 6) {
-    update.password = body.password; // pre-save hook hashes it
+    user.password = body.password; // pre-save hook hashes it on .save()
+  } else if (typeof body.password === 'string' && body.password.length > 0 && body.password.length < 6) {
+    return fail('Password must be at least 6 characters', 422);
   }
 
-  const user = await User.findByIdAndUpdate(params.id, { $set: update }, { new: true });
-  if (!user) return fail('User not found', 404);
+  await user.save();
   return ok({ user });
 }
 

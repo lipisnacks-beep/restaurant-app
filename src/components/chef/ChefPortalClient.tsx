@@ -5,9 +5,10 @@ import { toast } from 'sonner';
 import { timeAgo } from '@/lib/utils';
 import {
   ChefHat, Flame, CheckCircle2, Loader2, Clock, LogOut, Bell,
-  BellRing, Volume2, VolumeX,
+  BellRing, Volume2, VolumeX, UserCog,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 interface OrderItem { name: string; quantity: number; note?: string; price: number }
 interface Order {
@@ -218,6 +219,13 @@ export default function ChefPortalClient() {
                 {soundMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
               </button>
             )}
+            <Link
+              href="/chef/account"
+              title="Account settings"
+              className="btn-ghost text-white hover:bg-white/10 p-2"
+            >
+              <UserCog className="w-4 h-4" />
+            </Link>
             <button
               onClick={() => { api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'chef' }) }); router.push('/'); }}
               className="btn-ghost text-white hover:bg-white/10"
