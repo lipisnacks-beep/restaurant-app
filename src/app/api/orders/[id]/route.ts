@@ -2,10 +2,23 @@ import { NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import Order from '@/models/Order';
 import Table from '@/models/Table';
-import { getSession } from '@/lib/auth';
+import { getSession, getTokenFromRequest, verifyToken } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Resolve the session, falling back to the bearer/cookie token on the request
+ * itself if next/headers' cookies() doesn't expose it (can happen in some
+ * Vercel serverless invocations). Never throws.
+ */
+async function resolveSession(req: NextRequest) {
+  const direct = await getSession();
+  if (direct) return direct;
+  const token = getTokenFromRequest(req);
+  if (token) return verifyToken(token);
+  return null;
+}
 
 // GET /api/orders/[id]
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
@@ -22,7 +35,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
  *        or  { action: 'rate', rating, foodRating, serviceRating, ambianceRating, comment }
  */
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  const session = await getSession();
+  const session = await resolveSession(req);
   const body = await req.json();
   const { action } = body || {};
 
@@ -32,9 +45,11 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   switch (action) {
     case 'start_preparing': {
-      if (!session) return unauthorized();
-      if (!['admin', 'chef'].includes(session.role)) return forbidden();
-      if (order.status !== 'pending') return fail('Order is not pending', 422);
+      if (!session) return unauthorized('Your session has expired — please sign in again');
+      if (!['admin', 'chef'].includes(session.role)) {
+        return forbidden(`Only chef or admin can start cooking (your role: ${session.role})`);
+      }
+      if (order.status !== 'pending') return fail(`Order is already ${order.status}`, 422);
       order.status = 'preparing';
       order.preparingAt = new Date();
       if (session.role === 'chef') order.chefId = session.userId as any;
@@ -42,18 +57,22 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       return ok({ order });
     }
     case 'mark_ready': {
-      if (!session) return unauthorized();
-      if (!['admin', 'chef'].includes(session.role)) return forbidden();
-      if (order.status !== 'preparing') return fail('Order is not preparing', 422);
+      if (!session) return unauthorized('Your session has expired — please sign in again');
+      if (!['admin', 'chef'].includes(session.role)) {
+        return forbidden(`Only chef or admin can mark an order ready (your role: ${session.role})`);
+      }
+      if (order.status !== 'preparing') return fail(`Order is ${order.status}, not preparing — cannot mark ready`, 422);
       order.status = 'ready';
       order.readyAt = new Date();
       await order.save();
       return ok({ order });
     }
     case 'serve': {
-      if (!session) return unauthorized();
-      if (!['admin', 'staff'].includes(session.role)) return forbidden();
-      if (order.status !== 'ready') return fail('Order is not ready', 422);
+      if (!session) return unauthorized('Your session has expired — please sign in again');
+      if (!['admin', 'staff'].includes(session.role)) {
+        return forbidden(`Only staff or admin can serve an order (your role: ${session.role})`);
+      }
+      if (order.status !== 'ready') return fail(`Order is ${order.status}, not ready`, 422);
       order.status = 'served';
       order.servedAt = new Date();
       if (session.role === 'staff') order.staffId = session.userId as any;
@@ -62,8 +81,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     }
     case 'complete': {
       // Mark as completed (after payment) and free the table session if no other unpaid orders.
-      if (!session) return unauthorized();
-      if (!['admin', 'staff'].includes(session.role)) return forbidden();
+      if (!session) return unauthorized('Your session has expired — please sign in again');
+      if (!['admin', 'staff'].includes(session.role)) {
+        return forbidden(`Only staff or admin can complete an order (your role: ${session.role})`);
+      }
       if (!['served', 'ready'].includes(order.status)) return fail('Order cannot be completed from this state', 422);
       order.status = 'completed';
       order.completedAt = new Date();
@@ -71,8 +92,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       return ok({ order });
     }
     case 'cancel': {
-      if (!session) return unauthorized();
-      if (session.role !== 'admin') return forbidden();
+      if (!session) return unauthorized('Your session has expired — please sign in again');
+      if (session.role !== 'admin') {
+        return forbidden(`Only admin can cancel an order (your role: ${session.role})`);
+      }
       order.status = 'cancelled';
       order.cancelledAt = new Date();
       await order.save();
