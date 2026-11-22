@@ -16,7 +16,10 @@ interface Order {
 }
 
 const RINGTONE_URL = '/sounds/new-order.wav';
-const POLL_MS = 4000; // 4s — snappier than the old 8s so new orders ring sooner
+// Poll every 3s. The API response carries `Cache-Control: no-store` and the
+// client fetch uses `cache: 'no-store'`, so every poll hits the DB and sees
+// freshly accepted/claimed orders immediately — no stale cached snapshots.
+const POLL_MS = 3000;
 
 export default function ChefPortalClient() {
   const router = useRouter();
@@ -38,6 +41,11 @@ export default function ChefPortalClient() {
   // genuinely NEW orders (not on every poll).
   const seenPendingRef = useRef<Set<string>>(new Set());
   const [ringing, setRinging] = useState(false);
+
+  // Always-current ref to the latest `load` so other callbacks (enableAlerts,
+  // action) can trigger an immediate re-sync without going stale or hitting
+  // a TDZ on the deps array (load is defined below this point).
+  const loadRef = useRef<() => void>(() => {});
 
   const playRingtone = useCallback(() => {
     const a = audioRef.current;
@@ -83,6 +91,9 @@ export default function ChefPortalClient() {
       } catch { /* ignore */ }
     }
     toast.success('Order alerts enabled — you will hear new orders.');
+    // Sync immediately so any pending orders that arrived while audio was
+    // locked start ringing right away (don't wait for the next poll tick).
+    loadRef.current();
   }, []);
 
   // Toggle mute (does not lose the unlock).
@@ -131,6 +142,12 @@ export default function ChefPortalClient() {
   }, [soundEnabled, soundMuted, playRingtone, stopRingtone, notifPermission]);
 
   useEffect(() => {
+    // Keep the ref pointed at the latest load (so enableAlerts can trigger
+    // an immediate re-sync without a stale closure).
+    loadRef.current = load;
+  }, [load]);
+
+  useEffect(() => {
     // Detect Notification API support on mount.
     if (typeof Notification !== 'undefined') {
       setNotifPermission(Notification.permission);
@@ -156,6 +173,15 @@ export default function ChefPortalClient() {
       }
       load();
       return;
+    }
+    // Optimistic UI: the accepting chef stops hearing the bell immediately
+    // and the order leaves their 'New Orders' column right away, without
+    // waiting for the next poll. The full server refresh below reconciles
+    // any edge cases.
+    if (act === 'start_preparing') {
+      stopRingtone();
+      setRinging(false);
+      setOrders((prev) => prev.filter((x) => x._id !== o._id));
     }
     toast.success(act === 'start_preparing' ? 'Order accepted — start cooking' : 'Marked ready');
     load();

@@ -2,6 +2,11 @@
 /**
  * Small client-side fetch wrapper that always sends credentials (the httpOnly
  * session cookie) and parses JSON. Returns { data, error, status }.
+ *
+ * `cache: 'no-store'` is set on every request so the browser never serves a
+ * stale cached copy — the chef portal polls every few seconds and MUST see
+ * freshly accepted/claimed orders immediately, not a cached snapshot from
+ * a moment ago.
  */
 export async function api<T = any>(
   url: string,
@@ -11,6 +16,7 @@ export async function api<T = any>(
     const res = await fetch(url, {
       ...options,
       credentials: 'include',
+      cache: 'no-store',
       headers: {
         'Content-Type': 'application/json',
         ...(options.headers || {}),

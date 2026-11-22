@@ -50,19 +50,36 @@ export function generateOrderNumber(): string {
   return `ORD-${code}`;
 }
 
-/** Standard JSON response helpers. */
+/** Standard JSON response helpers.
+ *
+ * All responses are sent with `Cache-Control: no-store, max-age=0` so the
+ * browser never serves a stale cached copy on the next poll. Without this,
+ * GETs like /api/orders?role=chef are heuristically cached on mobile
+ * browsers (Safari/Chrome) and the chef portal keeps showing orders that
+ * were already accepted by another chef until the cache entry expires. */
 export function ok(data: unknown, init?: ResponseInit): Response {
-  return Response.json(data, { status: 200, ...init });
+  const headers = new Headers(init?.headers);
+  headers.set('Cache-Control', 'no-store, max-age=0');
+  return Response.json(data, { status: 200, ...init, headers });
 }
 
 export function fail(message: string, status = 400): Response {
-  return Response.json({ error: message }, { status });
+  return Response.json(
+    { error: message },
+    { status, headers: { 'Cache-Control': 'no-store, max-age=0' } },
+  );
 }
 
 export function unauthorized(message = 'Unauthorized'): Response {
-  return Response.json({ error: message }, { status: 401 });
+  return Response.json(
+    { error: message },
+    { status: 401, headers: { 'Cache-Control': 'no-store, max-age=0' } },
+  );
 }
 
 export function forbidden(message = 'Forbidden'): Response {
-  return Response.json({ error: message }, { status: 403 });
+  return Response.json(
+    { error: message },
+    { status: 403, headers: { 'Cache-Control': 'no-store, max-age=0' } },
+  );
 }

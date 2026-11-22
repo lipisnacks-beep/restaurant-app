@@ -53,6 +53,25 @@ def req(jar, path, method="GET", body=None, binary=False):
         try: return e.code, json.loads(raw) if raw else {}
         except: return e.code, {"_raw": raw}
 
+def req_full(jar, path, method="GET", body=None):
+    """Same as req() but also returns the response headers (lowercased keys)."""
+    d = json.dumps(body).encode() if body is not None else None
+    o = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    r = urllib.request.Request(BASE+path, data=d, method=method, headers={"Content-Type":"application/json"})
+    try:
+        x = o.open(r, timeout=20)
+        raw = x.read().decode(errors='replace')
+        headers = {k.lower(): v for k, v in x.headers.items()}
+        try: payload = json.loads(raw) if raw else {}
+        except: payload = {"_raw": raw}
+        return x.status, payload, headers
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode(errors='replace')
+        headers = {k.lower(): v for k, v in e.headers.items()}
+        try: payload = json.loads(raw) if raw else {}
+        except: payload = {"_raw": raw}
+        return e.code, payload, headers
+
 # Separate jars = separate browser sessions for each chef + admin + customer
 admin, chefA, chefB, cust = make_jar(), make_jar(), make_jar(), make_jar()
 
@@ -115,6 +134,40 @@ stillPendingB = [o for o in bB2.get("orders",[]) if o["status"]=="pending"]
 stillPreparingB = [o for o in bB2.get("orders",[]) if o["status"]=="preparing"]
 check(not any(o["_id"]==oid for o in stillPendingB), "chef B no longer sees it as pending")
 check(not any(o["_id"]==oid for o in stillPreparingB), "chef B does NOT see chef A's preparing order (scoping works)")
+
+print("\n=== Cache-Control header: every /api/orders response must be no-store ===")
+# This is THE fix for the bug the user reported: without `Cache-Control:
+# no-store`, mobile browsers (Safari/Chrome) heuristically cache the GET
+# and Chef B keeps seeing Chef A's already-accepted order until the cache
+# entry expires. We assert the header is present and forbids caching.
+s,_,hdrs = req_full(chefB, "/api/orders?role=chef")
+cc = hdrs.get("cache-control","")
+check("no-store" in cc, f"GET /api/orders returns Cache-Control: no-store (got '{cc}')")
+s,_,hdrs = req_full(chefA, "/api/orders?role=chef")
+cc = hdrs.get("cache-control","")
+check("no-store" in cc, f"chef A also gets no-store (got '{cc}')")
+
+print("\n=== Rapid re-poll: Chef B's NEXT poll (1s later) reflects Chef A's accept, no stale cache ===")
+# Place a SECOND order so chef B has something to see, then have chef A
+# accept it, and immediately poll as chef B — must NOT return the stale
+# pre-accept snapshot.
+s,b = req(cust, "/api/orders", "POST", {"tableNumber":1,"sessionId":sid,"customerName":"Chef Test",
+    "items":[{"menuItem":menu["items"][1]["_id"] if len(menu["items"])>1 else menu["items"][0]["_id"],"quantity":1}]})
+check(s==201, f"second order placed (status {s})")
+oid2 = b["order"]["_id"]
+import time
+# Chef B sees it pending first (baseline).
+s,bB_pre = req(chefB, "/api/orders?role=chef")
+saw_before = any(o["_id"]==oid2 and o["status"]=="pending" for o in bB_pre.get("orders",[]))
+check(saw_before, "chef B sees order #2 as pending before accept")
+# Chef A accepts it.
+s,b = req(chefA, f"/api/orders/{oid2}", "PATCH", {"action":"start_preparing"})
+check(s==200, f"chef A accepts order #2 (status {s})")
+# Chef B polls immediately — must reflect the new state (not pending),
+# proving the response was NOT served from a stale cache.
+s,bB_post = req(chefB, "/api/orders?role=chef")
+saw_pending_after = any(o["_id"]==oid2 and o["status"]=="pending" for o in bB_post.get("orders",[]))
+check(not saw_pending_after, "chef B's immediate re-poll does NOT show order #2 as pending (cache busted)")
 
 print("\n=== Chef B tries to accept the same order — should get the race message ===")
 s,b = req(chefB, f"/api/orders/{oid}", "PATCH", {"action":"start_preparing"})
