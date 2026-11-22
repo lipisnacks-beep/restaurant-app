@@ -7,6 +7,7 @@ export default function StaffLoginPage() {
       accent="bg-emerald-100 text-emerald-700"
       defaultEmail="staff@restaurant.com"
       allowedRoles={['staff', 'admin']}
+      scope="staff"
       redirectTo="/staff/portal"
     />
   );

@@ -16,9 +16,11 @@ interface LoginCardProps {
   defaultEmail?: string;
   /** Accepted roles for this panel — login is rejected for other roles. */
   allowedRoles: string[];
+  /** Which session cookie to write ('admin' | 'chef' | 'staff'). */
+  scope: 'admin' | 'chef' | 'staff';
 }
 
-export default function LoginCard({ redirectTo, title, accent, defaultEmail = '', allowedRoles }: LoginCardProps) {
+export default function LoginCard({ redirectTo, title, accent, defaultEmail = '', allowedRoles, scope }: LoginCardProps) {
   const router = useRouter();
   const [email, setEmail] = useState(defaultEmail);
   const [password, setPassword] = useState('');
@@ -29,7 +31,7 @@ export default function LoginCard({ redirectTo, title, accent, defaultEmail = ''
     setLoading(true);
     const { data, error, ok } = await api<{ user?: { role: string } }>('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, scope }),
     });
     setLoading(false);
     if (!ok) {
@@ -38,8 +40,8 @@ export default function LoginCard({ redirectTo, title, accent, defaultEmail = ''
     }
     if (!allowedRoles.includes(data?.user?.role || '')) {
       toast.error(`This account does not have access to the ${title}`);
-      // log them out so the cookie doesn't linger
-      await api('/api/auth/logout', { method: 'POST' });
+      // clear only this portal's cookie so other portals stay signed in
+      await api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope }) });
       return;
     }
     toast.success('Welcome back!');

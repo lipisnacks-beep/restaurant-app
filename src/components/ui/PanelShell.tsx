@@ -26,7 +26,7 @@ export default function PanelShell({ title, nav, accent, children }: PanelShellP
   const [open, setOpen] = useState(false);
 
   async function logout() {
-    await api('/api/auth/logout', { method: 'POST' });
+    await api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'admin' }) });
     router.push('/');
     router.refresh();
   }

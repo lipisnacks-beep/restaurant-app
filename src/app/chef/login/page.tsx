@@ -7,6 +7,7 @@ export default function ChefLoginPage() {
       accent="bg-rose-100 text-rose-700"
       defaultEmail="chef@restaurant.com"
       allowedRoles={['chef', 'admin']}
+      scope="chef"
       redirectTo="/chef/portal"
     />
   );

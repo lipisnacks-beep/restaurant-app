@@ -2,23 +2,10 @@ import { NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import Order from '@/models/Order';
 import Table from '@/models/Table';
-import { getSession, getTokenFromRequest, verifyToken } from '@/lib/auth';
+import { resolveSession } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
-
-/**
- * Resolve the session, falling back to the bearer/cookie token on the request
- * itself if next/headers' cookies() doesn't expose it (can happen in some
- * Vercel serverless invocations). Never throws.
- */
-async function resolveSession(req: NextRequest) {
-  const direct = await getSession();
-  if (direct) return direct;
-  const token = getTokenFromRequest(req);
-  if (token) return verifyToken(token);
-  return null;
-}
 
 // GET /api/orders/[id]
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {

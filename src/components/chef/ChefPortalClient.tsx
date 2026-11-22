@@ -73,7 +73,7 @@ export default function ChefPortalClient() {
             <span className="badge bg-white/20 text-white">
               <Bell className="w-3 h-3 mr-1" /> {pending.length} new
             </span>
-            <button onClick={() => { api('/api/auth/logout', { method: 'POST' }); router.push('/'); }} className="btn-ghost text-white hover:bg-white/10">
+            <button onClick={() => { api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'chef' }) }); router.push('/'); }} className="btn-ghost text-white hover:bg-white/10">
               <LogOut className="w-4 h-4" />
             </button>
           </div>

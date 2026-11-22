@@ -69,7 +69,7 @@ export default function StaffPortalClient() {
             <span className="badge bg-amber-400/30 text-amber-50">
               <Coins className="w-3 h-3 mr-1" /> {formatCurrency(tipsToday)} tips
             </span>
-            <button onClick={() => { api('/api/auth/logout', { method: 'POST' }); router.push('/'); }} className="btn-ghost text-white hover:bg-white/10">
+            <button onClick={() => { api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'staff' }) }); router.push('/'); }} className="btn-ghost text-white hover:bg-white/10">
               <LogOut className="w-4 h-4" />
             </button>
           </div>
