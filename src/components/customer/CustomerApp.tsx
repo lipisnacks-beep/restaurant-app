@@ -702,8 +702,10 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
   const [serviceRating, setServiceRating] = useState(0);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // phase: 'form' (review input) -> 'thanks' (countdown + google link) -> 'closed' (close failed, manual msg)
+  const [phase, setPhase] = useState<'form' | 'thanks' | 'closed'>('form');
   const [googleUrl, setGoogleUrl] = useState('');
-  const [closed, setClosed] = useState(false);
+  const [countdown, setCountdown] = useState(5);
 
   const grandTotal = sessionOrders.filter((o) => o.paymentStatus === 'paid')
     .reduce((s, o) => s + o.total, 0);
@@ -724,19 +726,56 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
     if (!ok) { toast.error(error || 'Failed'); return; }
     toast.success('Thanks for your feedback!');
     setGoogleUrl(data!.googleReviewUrl || '');
-    setClosed(!!data!.sessionClosed);
+    // Note: do NOT jump to 'closed' here. The API marks the dining session
+    // completed (sessionClosed=true), but we still want to show the Google
+    // review link + countdown. The previous code used sessionClosed to hide
+    // the Google card, which suppressed the review link entirely.
+    setPhase('thanks');
+    setCountdown(5);
   }
 
-  // After the review is submitted and the Google link shown, attempt to close
-  // the tab. Browsers only allow window.close() on tabs the script opened; we
-  // provide a fallback message if it can't close programmatically.
-  function closeTab() {
-    setTimeout(() => {
+  // Countdown + auto-close. Runs only in the 'thanks' phase. When the countdown
+  // reaches zero we attempt to close the tab; if the browser blocks it (most
+  // QR-scanned tabs cannot be closed by script), we fall back to a friendly
+  // "you can close this page now" message.
+  useEffect(() => {
+    if (phase !== 'thanks') return;
+    if (countdown <= 0) {
+      // Try several close strategies. window.close() only works on tabs that
+      // JavaScript itself opened (window.open), so QR-scanned tabs usually
+      // ignore it. We try anyway, then detect whether the page is still alive
+      // shortly after and fall back to the manual-close message.
+      try {
+        window.close();
+        // Some browsers honour close on the current tab if we re-open it first.
+        // This is a best-effort, harmless if it fails.
+        window.open('', '_self');
+        window.close();
+      } catch {
+        /* ignore */
+      }
+      const stillAlive = window.setTimeout(() => {
+        // If this callback fires, window.close() did not work -> show fallback.
+        setPhase('closed');
+      }, 600);
+      // Cancel-able: not necessary here since we transition state, but keep ref clean.
+      return () => window.clearTimeout(stillAlive);
+    }
+    const t = window.setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => window.clearTimeout(t);
+  }, [phase, countdown]);
+
+  // Manual close button (a real user gesture gives window.close() its best
+  // remaining chance of working). Same fallback if it doesn't.
+  function closeNow() {
+    try {
       window.close();
-      // Fallback: if the tab didn't close (most QR-scanned tabs can't), show
-      // a friendly message instead of leaving the user on a dead page.
-      setClosed(true);
-    }, 100);
+      window.open('', '_self');
+      window.close();
+    } catch {
+      /* ignore */
+    }
+    window.setTimeout(() => setPhase('closed'), 500);
   }
 
   return (
@@ -749,13 +788,13 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
         </p>
       </div>
 
-      {!googleUrl && (
+      {phase === 'form' && (
         <div className="card p-5 space-y-4">
           <div>
             <h3 className="font-semibold text-gray-800 mb-2 text-sm">How was your experience?</h3>
             <div className="flex gap-1">
               {[1, 2, 3, 4, 5].map((i) => (
-                <button key={i} onClick={() => setRating(i)}>
+                <button key={i} onClick={() => setRating(i)} aria-label={`Rate ${i} stars`}>
                   <Star className={`w-8 h-8 ${i <= rating ? 'fill-amber-400 text-amber-400' : 'text-gray-300'}`} />
                 </button>
               ))}
@@ -766,7 +805,7 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
               <p className="text-xs text-gray-500 mb-1">Food</p>
               <div className="flex gap-0.5">
                 {[1, 2, 3, 4, 5].map((i) => (
-                  <button key={i} onClick={() => setFoodRating(i)}>
+                  <button key={i} onClick={() => setFoodRating(i)} aria-label={`Food ${i}`}>
                     <Star className={`w-5 h-5 ${i <= foodRating ? 'fill-amber-400 text-amber-400' : 'text-gray-300'}`} />
                   </button>
                 ))}
@@ -776,7 +815,7 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
               <p className="text-xs text-gray-500 mb-1">Service</p>
               <div className="flex gap-0.5">
                 {[1, 2, 3, 4, 5].map((i) => (
-                  <button key={i} onClick={() => setServiceRating(i)}>
+                  <button key={i} onClick={() => setServiceRating(i)} aria-label={`Service ${i}`}>
                     <Star className={`w-5 h-5 ${i <= serviceRating ? 'fill-amber-400 text-amber-400' : 'text-gray-300'}`} />
                   </button>
                 ))}
@@ -791,36 +830,67 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
         </div>
       )}
 
-      {googleUrl && !closed && (
-        <div className="card p-5 text-center">
-          <Star className="w-10 h-10 text-amber-400 mx-auto mb-2" />
-          <h3 className="font-semibold text-gray-800">Thanks for your feedback!</h3>
-          <p className="text-sm text-gray-500 mt-1 mb-4">
-            Your dining session has ended. You can post on Google too — then this page will close automatically.
-          </p>
-          {googleUrl && googleUrl.includes('YOUR_PLACE_ID') ? (
-            <p className="text-xs text-amber-600 bg-amber-50 rounded-lg p-3">
-              Google review link is not configured yet. Ask the restaurant admin to set <code>GOOGLE_REVIEW_URL</code> in the environment.
+      {phase === 'thanks' && (
+        <div className="card p-5 text-center space-y-4">
+          <Star className="w-10 h-10 text-amber-400 mx-auto" />
+          <div>
+            <h3 className="font-semibold text-gray-800">Thanks for your feedback!</h3>
+            <p className="text-sm text-gray-500 mt-1">
+              Your dining session has ended. This page will close automatically in{' '}
+              <span className="font-semibold text-gray-700">{countdown}</span> second{countdown !== 1 ? 's' : ''}.
             </p>
-          ) : (
-            <a href={googleUrl} target="_blank" rel="noopener noreferrer" className="btn-primary w-full">
+          </div>
+
+          {/* Progress bar for the countdown */}
+          <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-emerald-500 transition-all duration-1000 ease-linear"
+              style={{ width: `${(countdown / 5) * 100}%` }}
+            />
+          </div>
+
+          {googleUrl && !googleUrl.includes('YOUR_PLACE_ID') && (
+            <a
+              href={googleUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-primary w-full"
+              // Opening Google reviews in a new tab pauses our countdown
+              // implicitly (background tabs throttle timers), but we also
+              // stop the countdown explicitly so the customer isn't rushed.
+              onClick={() => setCountdown(999)}
+            >
               <Star className="w-4 h-4" /> Post on Google Reviews
             </a>
           )}
-          <button onClick={closeTab} className="btn-secondary w-full mt-2">
-            <CheckCircle2 className="w-4 h-4" /> Done — Close this page
+          {googleUrl && googleUrl.includes('YOUR_PLACE_ID') && (
+            <p className="text-xs text-amber-600 bg-amber-50 rounded-lg p-3">
+              Google review link is not configured yet. Ask the restaurant admin to set{' '}
+              <code>GOOGLE_REVIEW_URL</code> in the environment.
+            </p>
+          )}
+
+          <button onClick={closeNow} className="btn-secondary w-full">
+            <CheckCircle2 className="w-4 h-4" /> Close now
           </button>
         </div>
       )}
 
-      {googleUrl && closed && (
-        <div className="card p-6 text-center">
-          <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-2" />
-          <h3 className="font-semibold text-gray-800">All done!</h3>
-          <p className="text-sm text-gray-500 mt-1">
-            Your session has ended. You can close this page now. We hope to see you again at Lipi Snacks!
-          </p>
-          <a href="/" className="btn-ghost w-full mt-3">Back to home</a>
+      {phase === 'closed' && (
+        <div className="card p-6 text-center space-y-3">
+          <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto" />
+          <div>
+            <h3 className="font-semibold text-gray-800">All done!</h3>
+            <p className="text-sm text-gray-500 mt-1">
+              Your session has ended and this page can be closed. We hope to see you again at Lipi Snacks!
+            </p>
+          </div>
+          {/* The browser blocked automatic closing (common on QR-scanned tabs).
+              A user-initiated click gives window.close() one more chance. */}
+          <button onClick={closeNow} className="btn-primary w-full">
+            <CheckCircle2 className="w-4 h-4" /> Close this page
+          </button>
+          <a href="/" className="btn-ghost w-full">Back to home</a>
         </div>
       )}
     </div>
