@@ -44,7 +44,15 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       if (!['admin', 'chef'].includes(session.role)) {
         return forbidden(`Only chef or admin can start cooking (your role: ${session.role})`);
       }
-      if (order.status !== 'pending') return fail(`Order is already ${order.status}`, 422);
+      if (order.status !== 'pending') {
+        // The most likely cause of a non-pending order here is a race:
+        // another chef accepted the order a moment ago. Give a clear,
+        // actionable message so the loser's UI can stop ringing.
+        const claimed = order.status === 'preparing'
+          ? ' — another chef just accepted it'
+          : '';
+        return fail(`Order is already ${order.status}${claimed}`, 422);
+      }
       order.status = 'preparing';
       order.preparingAt = new Date();
       if (session.role === 'chef') order.chefId = session.userId as any;

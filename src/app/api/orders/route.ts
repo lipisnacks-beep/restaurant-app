@@ -4,7 +4,7 @@ import Order from '@/models/Order';
 import MenuItem from '@/models/MenuItem';
 import Table from '@/models/Table';
 import CustomerSession from '@/models/CustomerSession';
-import { resolveCustomerSessionId } from '@/lib/auth';
+import { resolveCustomerSessionId, resolveSessionForRoles } from '@/lib/auth';
 import { ok, fail, generateOrderNumber } from '@/lib/utils';
 import { Types } from 'mongoose';
 
@@ -12,7 +12,10 @@ export const dynamic = 'force-dynamic';
 
 /**
  * GET /api/orders?status=preparing&role=chef
- *  - chef  : default returns { pending, preparing }
+ *  - chef  : NEW (pending) orders ring for ALL signed-in chefs so the first
+ *            available one can accept. Preparing orders are scoped to the
+ *            chef who accepted them (chefId == me) so each chef only sees
+ *            their own active jobs.
  *  - staff : default returns { ready, served }
  *  - admin : all today's orders
  *  - customer?sessionId=... : only that session's orders
@@ -32,7 +35,19 @@ export async function GET(req: NextRequest) {
   if (status) {
     filter.status = status.split(',').filter(Boolean);
   } else if (role === 'chef') {
-    filter.status = { $in: ['pending', 'preparing'] };
+    // Resolve the calling chef so we can scope their 'preparing' orders.
+    // Pending (unclaimed) orders ring for every chef; preparing orders are
+    // scoped to the chef who accepted them (chefId == me).
+    const session = await resolveSessionForRoles(req, ['admin', 'chef'], 'chef');
+    if (session && session.role === 'chef') {
+      filter.$or = [
+        { status: 'pending' },
+        { status: 'preparing', chefId: new Types.ObjectId(session.userId) },
+      ];
+    } else {
+      // Admin (or unauthenticated caller) sees both queues.
+      filter.status = { $in: ['pending', 'preparing'] };
+    }
   } else if (role === 'staff') {
     filter.status = { $in: ['ready', 'served'] };
   } else if (role === 'admin' && !sessionId) {

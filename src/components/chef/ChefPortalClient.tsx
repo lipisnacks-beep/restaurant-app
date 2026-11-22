@@ -1,9 +1,12 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { api } from '@/lib/apiClient';
 import { toast } from 'sonner';
 import { timeAgo } from '@/lib/utils';
-import { ChefHat, Flame, CheckCircle2, Loader2, Clock, LogOut, Bell } from 'lucide-react';
+import {
+  ChefHat, Flame, CheckCircle2, Loader2, Clock, LogOut, Bell,
+  BellRing, Volume2, VolumeX,
+} from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 interface OrderItem { name: string; quantity: number; note?: string; price: number }
@@ -12,46 +15,149 @@ interface Order {
   items: OrderItem[]; status: string; createdAt: string; customerName?: string; notes?: string;
 }
 
+const RINGTONE_URL = '/sounds/new-order.wav';
+const POLL_MS = 4000; // 4s — snappier than the old 8s so new orders ring sooner
+
 export default function ChefPortalClient() {
   const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
 
+  // --- Sound state ---
+  // Browsers block audio playback until the user interacts with the page. We
+  // show an "enable alerts" banner; the first tap runs audio.play() (resumes
+  // the AudioContext) and flips `soundEnabled`. After that the ringtone plays
+  // automatically whenever there are pending orders.
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [soundMuted, setSoundMuted] = useState(false);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission | 'unsupported'>('unsupported');
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Track previously-seen pending order ids so we only ring the bell on
+  // genuinely NEW orders (not on every poll).
+  const seenPendingRef = useRef<Set<string>>(new Set());
+  const [ringing, setRinging] = useState(false);
+
+  const playRingtone = useCallback(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    a.currentTime = 0;
+    a.volume = 1.0;
+    a.play().catch(() => {
+      // Autoplay still blocked (no user gesture yet). The enable-alerts
+      // banner stays visible so the chef can tap to unlock.
+      setSoundEnabled(false);
+    });
+  }, []);
+
+  const stopRingtone = useCallback(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    a.pause();
+    a.currentTime = 0;
+  }, []);
+
+  // One-tap unlock: a real user gesture lets us call play() and unlock audio
+  // for the rest of this tab's life.
+  const enableAlerts = useCallback(async () => {
+    const a = audioRef.current;
+    if (a) {
+      a.volume = 1.0;
+      try {
+        await a.play();
+        setSoundEnabled(true);
+        // Immediately stop (we don't want to ring now, just unlock).
+        a.pause();
+        a.currentTime = 0;
+      } catch {
+        toast.error('Could not enable sound — check your browser settings.');
+        return;
+      }
+    }
+    // Ask for desktop notifications too (bonus visual cue).
+    if ('Notification' in window && Notification.permission === 'default') {
+      try {
+        const p = await Notification.requestPermission();
+        setNotifPermission(p);
+      } catch { /* ignore */ }
+    }
+    toast.success('Order alerts enabled — you will hear new orders.');
+  }, []);
+
+  // Toggle mute (does not lose the unlock).
+  const toggleMute = useCallback(() => {
+    setSoundMuted((m) => {
+      const next = !m;
+      if (next) stopRingtone();
+      return next;
+    });
+  }, [stopRingtone]);
+
   const load = useCallback(async () => {
     const { data, ok } = await api<{ orders: Order[] }>('/api/orders?role=chef');
     if (ok && data) {
-      // play a soft beep when a new pending order arrives
-      if (data.orders.length > orders.length && orders.length >= 0) {
-        // No external sound file; use the WebAudio API to beep in the browser.
-        try {
-          const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.connect(gain); gain.connect(ctx.destination);
-          osc.frequency.value = 880;
-          gain.gain.setValueAtTime(0.05, ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.4);
-          osc.start(); osc.stop(ctx.currentTime + 0.4);
-        } catch { /* ignore audio errors */ }
-      }
       setOrders(data.orders);
+
+      const pendingNow = data.orders.filter((o) => o.status === 'pending');
+      const pendingIds = new Set(pendingNow.map((o) => o._id));
+
+      // Detect genuinely new pending orders.
+      const fresh = pendingNow.filter((o) => !seenPendingRef.current.has(o._id));
+      seenPendingRef.current = pendingIds;
+
+      if (fresh.length > 0) {
+        // Fire a desktop notification (if permitted) for the first fresh order.
+        if (notifPermission === 'granted') {
+          try {
+            new Notification('New order 🍳', {
+              body: `${fresh[0].orderNumber} · Table ${fresh[0].tableNumber}`,
+              tag: 'rms-new-order',
+            });
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Ring while there are pending orders (looping audio), stop when none.
+      if (pendingNow.length > 0) {
+        setRinging(true);
+        if (soundEnabled && !soundMuted) playRingtone();
+      } else {
+        setRinging(false);
+        stopRingtone();
+      }
     }
     setLoading(false);
-  }, [orders.length]);
+  }, [soundEnabled, soundMuted, playRingtone, stopRingtone, notifPermission]);
 
   useEffect(() => {
+    // Detect Notification API support on mount.
+    if (typeof Notification !== 'undefined') {
+      setNotifPermission(Notification.permission);
+    }
     load();
-    const t = setInterval(load, 8000);
+    const t = setInterval(load, POLL_MS);
     return () => clearInterval(t);
   }, [load]);
 
-  async function action(o: Order, action: 'start_preparing' | 'mark_ready') {
+  async function action(o: Order, act: 'start_preparing' | 'mark_ready') {
     setBusy(o._id);
-    const { error, ok } = await api(`/api/orders/${o._id}`, { method: 'PATCH', body: JSON.stringify({ action }) });
+    const { error, ok } = await api(`/api/orders/${o._id}`, {
+      method: 'PATCH', body: JSON.stringify({ action: act }),
+    });
     setBusy(null);
-    if (!ok) { toast.error(error || 'Failed'); return; }
-    toast.success(action === 'start_preparing' ? 'Started cooking' : 'Marked ready');
+    if (!ok) {
+      // The race message comes back as "Order is already preparing — another
+      // chef just accepted it". Surface it as an info toast, not an error.
+      if (act === 'start_preparing' && error && error.includes('another chef')) {
+        toast.info(error);
+      } else {
+        toast.error(error || 'Failed');
+      }
+      load();
+      return;
+    }
+    toast.success(act === 'start_preparing' ? 'Order accepted — start cooking' : 'Marked ready');
     load();
   }
 
@@ -60,6 +166,9 @@ export default function ChefPortalClient() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-rose-50 to-gray-50">
+      {/* Hidden looping audio element. Played/paused imperatively. */}
+      <audio ref={audioRef} src={RINGTONE_URL} loop preload="auto" />
+
       <header className="bg-gradient-to-r from-rose-600 to-rose-700 text-white sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -70,10 +179,23 @@ export default function ChefPortalClient() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="badge bg-white/20 text-white">
-              <Bell className="w-3 h-3 mr-1" /> {pending.length} new
+            <span className={`badge ${ringing ? 'bg-amber-400 text-amber-950 animate-pulse' : 'bg-white/20 text-white'}`}>
+              {ringing ? <BellRing className="w-3 h-3 mr-1" /> : <Bell className="w-3 h-3 mr-1" />}
+              {pending.length} new
             </span>
-            <button onClick={() => { api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'chef' }) }); router.push('/'); }} className="btn-ghost text-white hover:bg-white/10">
+            {soundEnabled && (
+              <button
+                onClick={toggleMute}
+                title={soundMuted ? 'Unmute alerts' : 'Mute alerts'}
+                className="btn-ghost text-white hover:bg-white/10 p-2"
+              >
+                {soundMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+              </button>
+            )}
+            <button
+              onClick={() => { api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'chef' }) }); router.push('/'); }}
+              className="btn-ghost text-white hover:bg-white/10"
+            >
               <LogOut className="w-4 h-4" />
             </button>
           </div>
@@ -81,27 +203,48 @@ export default function ChefPortalClient() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
+        {/* Enable-alerts banner (shown until the chef unlocks audio). */}
+        {!soundEnabled && (
+          <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <BellRing className="w-6 h-6 text-amber-600 shrink-0" />
+              <div>
+                <p className="font-semibold text-amber-900">Enable order alerts</p>
+                <p className="text-sm text-amber-700">
+                  Tap once so you hear a loud ringtone when a new order arrives. Browsers block sound until you interact.
+                </p>
+              </div>
+            </div>
+            <button onClick={enableAlerts} className="btn-primary shrink-0">
+              <Volume2 className="w-4 h-4" /> Enable
+            </button>
+          </div>
+        )}
+
         {loading ? (
           <div className="text-gray-500 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading orders…</div>
         ) : orders.length === 0 ? (
           <div className="card p-12 text-center">
             <CheckCircle2 className="w-12 h-12 mx-auto text-emerald-500 mb-3" />
             <h2 className="text-lg font-semibold text-gray-800">All caught up!</h2>
-            <p className="text-sm text-gray-500">No active orders right now. New orders will appear here automatically.</p>
+            <p className="text-sm text-gray-500">No active orders right now. New orders will ring here automatically.</p>
           </div>
         ) : (
           <div className="grid gap-6 lg:grid-cols-2">
             <section>
               <h2 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
                 <Clock className="w-4 h-4 text-orange-500" /> New Orders ({pending.length})
+                {pending.length > 0 && soundEnabled && !soundMuted && (
+                  <span className="text-xs text-amber-600 animate-pulse">🔔 ringing</span>
+                )}
               </h2>
               <div className="space-y-3">
                 {pending.length === 0 && <p className="text-sm text-gray-400">None.</p>}
                 {pending.map((o) => (
-                  <OrderCard key={o._id} order={o} accent="border-l-orange-500">
+                  <OrderCard key={o._id} order={o} accent="border-l-orange-500" ringing>
                     <button onClick={() => action(o, 'start_preparing')} disabled={busy === o._id} className="btn-primary w-full">
                       {busy === o._id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Flame className="w-4 h-4" />}
-                      Start Cooking
+                      Accept &amp; Start Cooking
                     </button>
                   </OrderCard>
                 ))}
@@ -131,9 +274,11 @@ export default function ChefPortalClient() {
   );
 }
 
-function OrderCard({ order, accent, children }: { order: Order; accent: string; children: React.ReactNode }) {
+function OrderCard({ order, accent, children, ringing }: {
+  order: Order; accent: string; children: React.ReactNode; ringing?: boolean;
+}) {
   return (
-    <div className={`card p-4 border-l-4 ${accent}`}>
+    <div className={`card p-4 border-l-4 ${accent} ${ringing ? 'ring-2 ring-amber-400 ring-offset-1' : ''}`}>
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="font-semibold text-gray-800">{order.orderNumber}</p>
