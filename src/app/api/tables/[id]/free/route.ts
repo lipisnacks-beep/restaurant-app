@@ -2,7 +2,7 @@ import { NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import Table from '@/models/Table';
 import CustomerSession from '@/models/CustomerSession';
-import { resolveSession } from '@/lib/auth';
+import { resolveSessionForRoles } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
@@ -21,7 +21,9 @@ export const dynamic = 'force-dynamic';
  * cases, still pending (admin can force-free).
  */
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  const session = await resolveSession(req, 'any');
+  // Resolve by allowed role (staff/admin) so a browser signed in as both chef
+  // and staff doesn't authenticate the chef here and get rejected.
+  const session = await resolveSessionForRoles(req, ['admin', 'staff'], 'staff');
   if (!session) return unauthorized('Your session has expired — please sign in again');
   if (!['admin', 'staff'].includes(session.role)) {
     return forbidden(`Only staff or admin can free a table (your role: ${session.role})`);

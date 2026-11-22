@@ -166,6 +166,97 @@ export async function resolveSession(
   return null;
 }
 
+/**
+ * Resolve a session whose role is in `allowedRoles`, scanning EVERY scoped
+ * cookie (and the legacy shared cookie) rather than returning the first one
+ * found.
+ *
+ * This is the helper to use for actions that accept a *specific* set of roles
+ * (e.g. only staff+admin can serve an order). When a browser is signed in as
+ * both chef and staff — common when one person covers both roles or during
+ * testing — `resolveSession(req)` with scope 'any' returns whichever cookie
+ * comes first in declaration order (admin → chef → staff), so a staff-portal
+ * action could authenticate as the chef and be rejected. By filtering on the
+ * role the action actually needs, we pick the staff cookie for a serve action
+ * even when a chef cookie is also present. `admin` is always allowed when the
+ * caller includes it.
+ *
+ * `preferredRole` (optional) is returned first when multiple cookies match —
+ * e.g. pass 'staff' so a staff-portal request prefers the staff identity over
+ * an admin one when both are present.
+ */
+export async function resolveSessionForRoles(
+  req: NextRequest,
+  allowedRoles: Role[],
+  preferredRole?: Role,
+): Promise<SessionPayload | null> {
+  if (allowedRoles.length === 0) return null;
+  const candidates: SessionPayload[] = [];
+
+  // next/headers `cookies()` (server components / route handlers).
+  const store = await cookies();
+  for (const name of Object.values(SCOPE_COOKIE)) {
+    const token = store.get(name)?.value;
+    if (token) {
+      const s = verifyToken(token);
+      if (s && allowedRoles.includes(s.role)) candidates.push(s);
+    }
+  }
+  const legacy = store.get(SESSION_COOKIE_NAME)?.value;
+  if (legacy) {
+    const s = verifyToken(legacy);
+    if (s && allowedRoles.includes(s.role)) candidates.push(s);
+  }
+
+  // Fall back to reading cookies off the request directly (some serverless
+  // invocations don't expose next/headers `cookies()` to the handler).
+  if (candidates.length === 0) {
+    for (const name of Object.values(SCOPE_COOKIE)) {
+      const token = req.cookies.get(name)?.value;
+      if (token) {
+        const s = verifyToken(token);
+        if (s && allowedRoles.includes(s.role)) candidates.push(s);
+      }
+    }
+    const reqLegacy = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+    if (reqLegacy) {
+      const s = verifyToken(reqLegacy);
+      if (s && allowedRoles.includes(s.role)) candidates.push(s);
+    }
+  }
+
+  if (candidates.length === 0) return null;
+  if (preferredRole) {
+    const preferred = candidates.find((c) => c.role === preferredRole);
+    if (preferred) return preferred;
+  }
+  return candidates[0];
+}
+
+/** Resolve a session for a single scope but with a role allow-list fallback.
+ * Used by routes that know which portal they belong to. */
+export async function resolveScopedSession(
+  req: NextRequest,
+  scope: Exclude<SessionScope, 'any'>,
+  allowedRoles: Role[] = [],
+): Promise<SessionPayload | null> {
+  // First try the scope's own cookie (the normal case).
+  const direct = await getSession(scope);
+  if (direct) return direct;
+  const token = getTokenFromRequest(req, scope);
+  if (token) {
+    const s = verifyToken(token);
+    if (s && roleMatchesScope(s.role, scope)) return s;
+  }
+  // If the scope cookie is absent/invalid but another scoped cookie with a
+  // matching role exists, use it (lets an admin act as staff without a
+  // separate staff login).
+  if (allowedRoles.length > 0) {
+    return resolveSessionForRoles(req, allowedRoles);
+  }
+  return null;
+}
+
 export function toObjectId(id: string): Types.ObjectId {
   return new Types.ObjectId(id);
 }

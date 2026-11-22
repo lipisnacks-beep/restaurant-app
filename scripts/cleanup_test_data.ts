@@ -10,7 +10,7 @@ async function main() {
   const Review = (await import('/home/z/my-project/download/restaurant-app/src/models/Review')).default;
   const Table = (await import('/home/z/my-project/download/restaurant-app/src/models/Table')).default;
   // Delete test customers by mobile + their cascade
-  const testMobiles = ['9876543210','9999999999'];
+  const testMobiles = ['9876543210','9999999999','9777777777','9666666666'];
   const custs = await Customer.find({ mobile: { $in: testMobiles } }).select('_id').lean();
   const custIds = custs.map(c=>c._id);
   const sessDel = await CustomerSession.deleteMany({ $or: [{ customer: { $in: custIds } }, { mobile: { $in: testMobiles } }] });

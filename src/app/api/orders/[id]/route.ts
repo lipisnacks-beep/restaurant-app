@@ -3,7 +3,7 @@ import dbConnect from '@/lib/db';
 import Order from '@/models/Order';
 import Table from '@/models/Table';
 import CustomerSession from '@/models/CustomerSession';
-import { resolveSession, resolveCustomerSessionId } from '@/lib/auth';
+import { resolveSessionForRoles, resolveCustomerSessionId } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
@@ -21,9 +21,15 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
  *  body: { action: 'start_preparing' | 'mark_ready' | 'serve' | 'complete' | 'cancel' }
  *        or  { action: 'pay', paymentMethod, tip }  (customer, marks paid + completed)
  *        or  { action: 'rate', rating, foodRating, serviceRating, ambianceRating, comment }
+ *
+ * Auth note: each action resolves the session with an explicit role allow-list
+ * (and a preferred role matching the portal that owns the action). This matters
+ * because a single browser can hold several scoped session cookies at once
+ * (e.g. someone signed in as both chef and staff). The generic 'any' resolver
+ * returns the first cookie in declaration order, so without the role filter a
+ * staff-portal action could authenticate as chef and be rejected.
  */
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  const session = await resolveSession(req);
   const body = await req.json();
   const { action } = body || {};
 
@@ -33,6 +39,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   switch (action) {
     case 'start_preparing': {
+      const session = await resolveSessionForRoles(req, ['admin', 'chef'], 'chef');
       if (!session) return unauthorized('Your session has expired — please sign in again');
       if (!['admin', 'chef'].includes(session.role)) {
         return forbidden(`Only chef or admin can start cooking (your role: ${session.role})`);
@@ -45,6 +52,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       return ok({ order });
     }
     case 'mark_ready': {
+      const session = await resolveSessionForRoles(req, ['admin', 'chef'], 'chef');
       if (!session) return unauthorized('Your session has expired — please sign in again');
       if (!['admin', 'chef'].includes(session.role)) {
         return forbidden(`Only chef or admin can mark an order ready (your role: ${session.role})`);
@@ -56,11 +64,12 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       return ok({ order });
     }
     case 'serve': {
+      const session = await resolveSessionForRoles(req, ['admin', 'staff'], 'staff');
       if (!session) return unauthorized('Your session has expired — please sign in again');
       if (!['admin', 'staff'].includes(session.role)) {
         return forbidden(`Only staff or admin can serve an order (your role: ${session.role})`);
       }
-      if (order.status !== 'ready') return fail(`Order is ${order.status}, not ready`, 422);
+      if (order.status !== 'ready') return fail(`Order is ${order.status}, not ready — cannot serve`, 422);
       order.status = 'served';
       order.servedAt = new Date();
       if (session.role === 'staff') order.staffId = session.userId as any;
@@ -68,7 +77,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       return ok({ order });
     }
     case 'complete': {
-      // Mark as completed (after payment) and free the table session if no other unpaid orders.
+      const session = await resolveSessionForRoles(req, ['admin', 'staff'], 'staff');
       if (!session) return unauthorized('Your session has expired — please sign in again');
       if (!['admin', 'staff'].includes(session.role)) {
         return forbidden(`Only staff or admin can complete an order (your role: ${session.role})`);
@@ -80,6 +89,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       return ok({ order });
     }
     case 'cancel': {
+      const session = await resolveSessionForRoles(req, ['admin']);
       if (!session) return unauthorized('Your session has expired — please sign in again');
       if (session.role !== 'admin') {
         return forbidden(`Only admin can cancel an order (your role: ${session.role})`);
