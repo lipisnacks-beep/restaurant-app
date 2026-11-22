@@ -9,6 +9,7 @@ import { formatCurrency } from '@/lib/utils';
 import {
   ShoppingCart, Plus, Minus, Trash2, UtensilsCrossed, Loader2, CheckCircle2,
   Receipt, Banknote, QrCode, CreditCard, Star, ChevronLeft, ChefHat, ConciergeBell,
+  Phone, User, Clock,
 } from 'lucide-react';
 
 interface MenuItem {
@@ -20,10 +21,21 @@ interface Order {
   _id: string; orderNumber: string; tableNumber: number; items: OrderItem[];
   subtotal: number; taxAmount: number; serviceChargeAmount: number; tip: number;
   total: number; status: string; paymentMethod?: string; paymentStatus: string;
-  customerName?: string; createdAt: string;
+  customerName?: string; createdAt: string; servedAt?: string | null; completedAt?: string | null;
+}
+interface CustomerInfo { _id: string; name: string; mobile: string }
+interface DiningSession {
+  _id: string; sessionId: string; customerName: string; mobile: string;
+  tableNumber: number; status: 'active' | 'paid' | 'completed' | 'closed';
+  startedAt: string; endedAt?: string | null; orderCount: number; total: number; tip: number;
+}
+interface SessionPayload {
+  session: DiningSession | null;
+  orders: Order[]; payable: Order[]; pending: Order[]; paid: Order[];
+  bill: { subtotal: number; taxAmount: number; serviceChargeAmount: number; payableOrderCount: number };
 }
 
-type View = 'menu' | 'cart' | 'checkout' | 'tracking' | 'pay' | 'thankyou';
+type View = 'register' | 'menu' | 'cart' | 'checkout' | 'tracking' | 'pay' | 'thankyou' | 'closed';
 
 export default function CustomerApp() {
   const search = useSearchParams();
@@ -33,28 +45,56 @@ export default function CustomerApp() {
   const cart = useCart();
   const [items, setItems] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<View>('menu');
+  const [view, setView] = useState<View>('register');
   const [activeCategory, setActiveCategory] = useState('All');
   const [placing, setPlacing] = useState(false);
+  const [customer, setCustomer] = useState<CustomerInfo | null>(null);
+  const [diningSession, setDiningSession] = useState<DiningSession | null>(null);
+  const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   const [paying, setPaying] = useState(false);
   const [tip, setTip] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'upi' | 'card'>('upi');
+  const [checkingSession, setCheckingSession] = useState(true);
 
-  // Hydrate cart from localStorage (zustand persist) and set table from URL.
+  // 1) Hydrate the persisted cart + set table from URL.
   useEffect(() => {
     setHydrated(true);
     if (tableParam) {
       const n = Number(tableParam);
       if (!Number.isNaN(n)) {
         cart.setTable(n);
-        if (!cart.sessionId) {
-          cart.setSession(`t${n}-${Date.now().toString(36)}`);
-        }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableParam]);
+
+  // 2) On load, check if this browser already has a dining session (cookie).
+  const checkSession = useCallback(async () => {
+    setCheckingSession(true);
+    const { data, ok } = await api<{ session: DiningSession | null; customer: CustomerInfo | null }>(
+      '/api/customer/register',
+    );
+    if (ok && data?.session && data.customer) {
+      setCustomer(data.customer);
+      setDiningSession(data.session);
+      cart.setSession(data.session.sessionId);
+      cart.setCustomerName(data.session.customerName);
+      cart.setCustomerMobile(data.session.mobile);
+      // If the session is completed/closed, the meal is over.
+      if (data.session.status === 'completed' || data.session.status === 'closed') {
+        setView('closed');
+      } else {
+        setView('menu');
+      }
+    }
+    setCheckingSession(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (hydrated) checkSession();
+  }, [hydrated, checkSession]);
 
   const loadMenu = useCallback(async () => {
     const { data, ok } = await api<{ items: MenuItem[] }>('/api/menu?available=true');
@@ -63,6 +103,28 @@ export default function CustomerApp() {
   }, []);
 
   useEffect(() => { loadMenu(); }, [loadMenu]);
+
+  // 3) Load the aggregated session (orders + bill) whenever we need it.
+  const loadSession = useCallback(async () => {
+    if (!diningSession) return;
+    const { data } = await api<SessionPayload>('/api/customer/session');
+    if (data) {
+      setDiningSession(data.session);
+      setSessionOrders(data.orders);
+      // Track the most recent order for the tracking view.
+      if (data.orders.length > 0) {
+        setActiveOrder(data.orders[data.orders.length - 1]);
+      }
+    }
+  }, [diningSession]);
+
+  useEffect(() => {
+    if (view === 'tracking' && diningSession) {
+      loadSession();
+      const t = setInterval(loadSession, 5000);
+      return () => clearInterval(t);
+    }
+  }, [view, diningSession, loadSession]);
 
   const categories = useMemo(() => {
     const set = new Set(items.map((i) => i.category));
@@ -80,10 +142,30 @@ export default function CustomerApp() {
     toast.success(`${m.name} added`);
   }
 
+  async function register(name: string, mobile: string) {
+    if (!cart.tableNumber) { toast.error('Unknown table — please scan the QR again'); return; }
+    setPlacing(true);
+    const { data, error, ok } = await api<{
+      session: DiningSession; customer: CustomerInfo; resumed: boolean;
+    }>('/api/customer/register', {
+      method: 'POST',
+      body: JSON.stringify({ name, mobile, tableNumber: cart.tableNumber }),
+    });
+    setPlacing(false);
+    if (!ok || !data) { toast.error(error || 'Registration failed'); return; }
+    setCustomer(data.customer);
+    setDiningSession(data.session);
+    cart.setSession(data.session.sessionId);
+    cart.setCustomerName(data.customer.name);
+    cart.setCustomerMobile(data.customer.mobile);
+    setView('menu');
+    toast.success(data.resumed ? `Welcome back, ${data.customer.name}!` : `Welcome, ${data.customer.name}!`);
+  }
+
   async function placeOrder() {
     if (!cart.tableNumber) { toast.error('Unknown table — please scan the QR again'); return; }
     if (cart.items.length === 0) return;
-    if (!cart.customerName) { toast.error('Please enter your name'); return; }
+    if (!cart.sessionId) { toast.error('Session expired — please scan the QR again'); return; }
     setPlacing(true);
     const body = {
       tableNumber: cart.tableNumber,
@@ -98,31 +180,18 @@ export default function CustomerApp() {
     if (!ok) { toast.error(error || 'Failed to place order'); return; }
     setActiveOrder(data!.order);
     cart.clear();
+    await loadSession();
     setView('tracking');
     toast.success(`Order ${data!.order.orderNumber} placed!`);
   }
 
-  const loadActiveOrder = useCallback(async () => {
-    if (!activeOrder) return;
-    const { data } = await api<{ order: Order }>(`/api/orders/${activeOrder._id}`);
-    if (data?.order) setActiveOrder(data.order);
-  }, [activeOrder]);
-
-  useEffect(() => {
-    if (view === 'tracking' && activeOrder) {
-      loadActiveOrder();
-      const t = setInterval(loadActiveOrder, 5000);
-      return () => clearInterval(t);
-    }
-  }, [view, activeOrder, loadActiveOrder]);
-
   async function pay() {
     if (!activeOrder) return;
     setPaying(true);
-    const { data, error, ok } = await api<{ order: Order }>(`/api/orders/${activeOrder._id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ action: 'pay', paymentMethod, tip }),
-    });
+    const { data, error, ok } = await api<{ order: Order; grandTotal: number; paidOrders: string[] }>(
+      `/api/orders/${activeOrder._id}`,
+      { method: 'PATCH', body: JSON.stringify({ action: 'pay', paymentMethod, tip }) },
+    );
     setPaying(false);
     if (!ok) { toast.error(error || 'Payment failed'); return; }
     setActiveOrder(data!.order);
@@ -130,7 +199,7 @@ export default function CustomerApp() {
   }
 
   // ---- Render ----
-  if (!hydrated) {
+  if (!hydrated || checkingSession) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500"><Loader2 className="w-5 h-5 animate-spin" /></div>;
   }
 
@@ -148,6 +217,14 @@ export default function CustomerApp() {
     );
   }
 
+  if (view === 'register') {
+    return <RegisterView tableNumber={cart.tableNumber} onRegister={register} placing={placing} />;
+  }
+
+  if (view === 'closed') {
+    return <ClosedView />;
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-amber-50 to-gray-50 pb-24">
       {/* Header */}
@@ -157,7 +234,10 @@ export default function CustomerApp() {
             <UtensilsCrossed className="w-6 h-6" />
             <div>
               <h1 className="font-semibold leading-none">Lipi Snacks</h1>
-              <p className="text-xs text-brand-100">Table {cart.tableNumber}</p>
+              <p className="text-xs text-brand-100">
+                Table {cart.tableNumber}
+                {customer ? ` · ${customer.name}` : ''}
+              </p>
             </div>
           </div>
           {view !== 'menu' && view !== 'thankyou' && (
@@ -178,9 +258,17 @@ export default function CustomerApp() {
 
       <main className="max-w-3xl mx-auto px-4 py-4">
         {view === 'menu' && (
-          <MenuView items={filtered} categories={categories} active={activeCategory} setActive={setActiveCategory}
-            loading={loading} onAdd={addToCart} cartItems={cart.items} onInc={(id) => cart.setQty(id, (cart.items.find((i) => i.menuItem === id)?.quantity || 0) + 1)}
-            onDec={(id) => cart.setQty(id, (cart.items.find((i) => i.menuItem === id)?.quantity || 0) - 1)} />
+          <>
+            <MenuView items={filtered} categories={categories} active={activeCategory} setActive={setActiveCategory}
+              loading={loading} onAdd={addToCart} cartItems={cart.items} onInc={(id) => cart.setQty(id, (cart.items.find((i) => i.menuItem === id)?.quantity || 0) + 1)}
+              onDec={(id) => cart.setQty(id, (cart.items.find((i) => i.menuItem === id)?.quantity || 0) - 1)} />
+            {/* Order-more / view-orders shortcut */}
+            {sessionOrders.length > 0 && (
+              <button onClick={() => setView('tracking')} className="btn-secondary w-full mt-4">
+                <Receipt className="w-4 h-4" /> View my orders ({sessionOrders.length})
+              </button>
+            )}
+          </>
         )}
 
         {view === 'cart' && (
@@ -191,17 +279,23 @@ export default function CustomerApp() {
           <CheckoutView cart={cart} placing={placing} onPlace={placeOrder} onBack={() => setView('cart')} />
         )}
 
-        {view === 'tracking' && activeOrder && (
-          <TrackingView order={activeOrder} onPay={() => setView('pay')} />
+        {view === 'tracking' && diningSession && (
+          <TrackingView
+            session={diningSession}
+            orders={sessionOrders}
+            activeOrder={activeOrder}
+            onOrderMore={() => setView('menu')}
+            onPay={() => setView('pay')}
+          />
         )}
 
         {view === 'pay' && activeOrder && (
-          <PayView order={activeOrder} tip={tip} setTip={setTip} method={paymentMethod} setMethod={setPaymentMethod}
-            paying={paying} onPay={pay} onBack={() => setView('tracking')} />
+          <PayView order={activeOrder} sessionOrders={sessionOrders} tip={tip} setTip={setTip}
+            method={paymentMethod} setMethod={setPaymentMethod} paying={paying} onPay={pay} onBack={() => setView('tracking')} />
         )}
 
         {view === 'thankyou' && activeOrder && (
-          <ThankYouView order={activeOrder} />
+          <ThankYouView order={activeOrder} sessionOrders={sessionOrders} />
         )}
       </main>
     </div>
@@ -209,6 +303,72 @@ export default function CustomerApp() {
 }
 
 /* ---------------- Sub-views ---------------- */
+
+function RegisterView({ tableNumber, onRegister, placing }: {
+  tableNumber: number; onRegister: (name: string, mobile: string) => void; placing: boolean;
+}) {
+  const [name, setName] = useState('');
+  const [mobile, setMobile] = useState('');
+  const valid = name.trim().length >= 2 && /^[6-9]\d{9}$/.test(mobile.replace(/\D/g, ''));
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-amber-50 to-gray-50 flex flex-col">
+      <header className="bg-gradient-to-r from-brand-600 to-brand-700 text-white">
+        <div className="max-w-3xl mx-auto px-4 h-16 flex items-center gap-2">
+          <UtensilsCrossed className="w-6 h-6" />
+          <div>
+            <h1 className="font-semibold leading-none">Lipi Snacks</h1>
+            <p className="text-xs text-brand-100">Table {tableNumber}</p>
+          </div>
+        </div>
+      </header>
+      <main className="flex-1 max-w-md mx-auto w-full px-4 py-8">
+        <div className="card p-6 space-y-5">
+          <div className="text-center">
+            <div className="w-14 h-14 rounded-xl bg-brand-100 text-brand-700 flex items-center justify-center mx-auto mb-3">
+              <User className="w-7 h-7" />
+            </div>
+            <h2 className="text-xl font-bold text-gray-800">Welcome!</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Please share your name &amp; mobile to start ordering. We use this only to serve you better.
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Your name</label>
+            <input className="input" placeholder="e.g. Rahim" value={name} onChange={(e) => setName(e.target.value)}
+              autoComplete="name" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Mobile number</label>
+            <div className="relative">
+              <Phone className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input className="input pl-9" placeholder="10-digit mobile" value={mobile}
+                onChange={(e) => setMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                inputMode="numeric" autoComplete="tel" />
+            </div>
+            <p className="text-xs text-gray-400 mt-1">We&apos;ll remember you next time you visit.</p>
+          </div>
+          <button onClick={() => onRegister(name, mobile)} disabled={!valid || placing} className="btn-primary w-full">
+            {placing ? <Loader2 className="w-4 h-4 animate-spin" /> : <UtensilsCrossed className="w-4 h-4" />}
+            Start Ordering
+          </button>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function ClosedView() {
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center bg-gradient-to-br from-emerald-50 to-gray-50">
+      <CheckCircle2 className="w-16 h-16 text-emerald-500 mb-4" />
+      <h1 className="text-2xl font-bold text-gray-800 mb-2">Thanks for visiting!</h1>
+      <p className="text-gray-600 max-w-md">
+        Your dining session has ended. You may close this page now. We hope to see you again soon at Lipi Snacks!
+      </p>
+    </div>
+  );
+}
 
 function MenuView({ items, categories, active, setActive, loading, onAdd, cartItems, onInc, onDec }: {
   items: MenuItem[]; categories: string[]; active: string; setActive: (s: string) => void;
@@ -325,9 +485,11 @@ function CheckoutView({ cart, placing, onPlace, onBack }: { cart: any; placing: 
     <div className="space-y-4">
       <button onClick={onBack} className="btn-ghost text-sm"><ChevronLeft className="w-4 h-4" /> Back to cart</button>
       <div className="card p-4">
-        <label className="block text-sm font-medium text-gray-700 mb-1">Your name (for the kitchen)</label>
-        <input className="input" placeholder="e.g. Rahim" value={cart.customerName} onChange={(e) => cart.setCustomerName(e.target.value)} />
-        <p className="text-xs text-gray-400 mt-1">Optional, but helps staff find your table faster.</p>
+        <p className="text-sm text-gray-600">
+          Ordering as <strong className="text-gray-800">{cart.customerName || 'Guest'}</strong>
+          {cart.customerMobile ? ` · ${cart.customerMobile}` : ''}
+        </p>
+        <p className="text-xs text-gray-400 mt-1">Table {cart.tableNumber}. You can order more items later — pay only when you&apos;re done.</p>
       </div>
       <BillSummary cart={cart} />
       <button onClick={onPlace} disabled={placing || cart.items.length === 0} className="btn-primary w-full">
@@ -347,78 +509,144 @@ const STATUS_STEPS = [
 ];
 const STATUS_ORDER = ['pending', 'preparing', 'ready', 'served', 'completed'];
 
-function TrackingView({ order, onPay }: { order: Order; onPay: () => void }) {
-  const currentIdx = STATUS_ORDER.indexOf(order.status);
-  const canPay = ['served', 'ready'].includes(order.status);
+function TrackingView({ session, orders, activeOrder, onOrderMore, onPay }: {
+  session: DiningSession; orders: Order[]; activeOrder: Order | null;
+  onOrderMore: () => void; onPay: () => void;
+}) {
+  const payable = orders.filter((o) => o.paymentStatus === 'unpaid' && ['served', 'ready'].includes(o.status));
+  const pending = orders.filter((o) => o.paymentStatus === 'unpaid' && ['pending', 'preparing'].includes(o.status));
+  const paid = orders.filter((o) => o.paymentStatus === 'paid');
+  const canPay = payable.length > 0;
+
   return (
     <div className="space-y-4">
       <div className="card p-5 text-center">
-        <p className="text-xs text-gray-500">Your order</p>
-        <p className="text-2xl font-bold text-brand-700">{order.orderNumber}</p>
-        <p className="text-sm text-gray-500 mt-1">Table {order.tableNumber}</p>
+        <p className="text-xs text-gray-500">Your session</p>
+        <p className="text-sm font-medium text-gray-800">
+          {session.customerName} · Table {session.tableNumber}
+        </p>
+        <p className="text-xs text-gray-400 mt-1 flex items-center justify-center gap-1">
+          <Clock className="w-3 h-3" /> Seated since {new Date(session.startedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+          {' · '}{orders.length} order{orders.length !== 1 ? 's' : ''}
+        </p>
       </div>
 
-      <div className="card p-5">
-        <ol className="space-y-4">
-          {STATUS_STEPS.map((s, idx) => {
-            const done = idx <= currentIdx;
-            const Icon = s.icon;
-            return (
-              <li key={s.key} className="flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${done ? 'bg-emerald-500 text-white' : 'bg-gray-100 text-gray-400'}`}>
-                  <Icon className="w-5 h-5" />
-                </div>
-                <div>
-                  <p className={`font-medium ${done ? 'text-gray-800' : 'text-gray-400'}`}>{s.label}</p>
-                  {idx === currentIdx && order.status !== 'served' && (
-                    <p className="text-xs text-brand-600 animate-pulse">In progress…</p>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      </div>
+      {activeOrder && (
+        <div className="card p-5">
+          <p className="text-xs text-gray-500 mb-2">Latest order</p>
+          <p className="text-xl font-bold text-brand-700 mb-3">{activeOrder.orderNumber}</p>
+          <ol className="space-y-4">
+            {STATUS_STEPS.map((s, idx) => {
+              const done = idx <= STATUS_ORDER.indexOf(activeOrder.status);
+              const Icon = s.icon;
+              return (
+                <li key={s.key} className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${done ? 'bg-emerald-500 text-white' : 'bg-gray-100 text-gray-400'}`}>
+                    <Icon className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className={`font-medium ${done ? 'text-gray-800' : 'text-gray-400'}`}>{s.label}</p>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      )}
 
+      {/* All orders summary */}
       <div className="card p-4">
-        <h3 className="font-semibold text-gray-800 mb-2 text-sm">Items</h3>
-        <ul className="text-sm space-y-1">
-          {order.items.map((i, idx) => (
-            <li key={idx} className="flex justify-between text-gray-700">
-              <span>{i.quantity}× {i.name}{i.note ? ` (${i.note})` : ''}</span>
-              <span>{formatCurrency(i.price * i.quantity)}</span>
+        <h3 className="font-semibold text-gray-800 mb-2 text-sm">All your orders</h3>
+        <ul className="text-sm space-y-2">
+          {orders.map((o) => (
+            <li key={o._id} className="flex items-center justify-between border-b last:border-0 pb-2 last:pb-0">
+              <div>
+                <span className="font-medium text-gray-800">{o.orderNumber}</span>
+                <span className="text-xs text-gray-400 ml-2">{o.items.reduce((s, i) => s + i.quantity, 0)} items</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-gray-700">{formatCurrency(o.total)}</span>
+                <span className={`badge text-[10px] ${o.paymentStatus === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                  {o.status}
+                </span>
+              </div>
             </li>
           ))}
+          {orders.length === 0 && <li className="text-gray-400 text-xs">No orders yet.</li>}
         </ul>
-        <div className="border-t mt-2 pt-2 flex justify-between font-semibold text-gray-800 text-sm">
-          <span>Total</span><span>{formatCurrency(order.total)}</span>
-        </div>
+        {payable.length > 0 && (
+          <div className="border-t mt-3 pt-2 text-sm flex justify-between font-semibold text-gray-800">
+            <span>Payable now ({payable.length})</span>
+            <span>{formatCurrency(payable.reduce((s, o) => s + o.total, 0))}</span>
+          </div>
+        )}
       </div>
 
-      {canPay && (
-        <button onClick={onPay} className="btn-primary w-full">
-          <Receipt className="w-4 h-4" /> Pay the Bill
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={onOrderMore} className="btn-secondary">
+          <Plus className="w-4 h-4" /> Order More
         </button>
+        {canPay ? (
+          <button onClick={onPay} className="btn-primary">
+            <Receipt className="w-4 h-4" /> Pay Bill
+          </button>
+        ) : (
+          <button disabled className="btn-primary opacity-50 cursor-not-allowed">
+            <Receipt className="w-4 h-4" /> Pay Bill
+          </button>
+        )}
+      </div>
+      {pending.length > 0 && (
+        <p className="text-xs text-amber-600 text-center">
+          {pending.length} order{pending.length !== 1 ? 's are' : ' is'} still being prepared — pay after they&apos;re served.
+        </p>
       )}
-      {order.status === 'completed' && (
+      {paid.length > 0 && pending.length === 0 && payable.length === 0 && (
         <div className="card p-4 bg-emerald-50 border-emerald-200 text-center">
           <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-1" />
-          <p className="text-sm font-medium text-emerald-700">Thank you! Payment received.</p>
+          <p className="text-sm font-medium text-emerald-700">All paid! Thanks for dining with us.</p>
         </div>
       )}
     </div>
   );
 }
 
-function PayView({ order, tip, setTip, method, setMethod, paying, onPay, onBack }: {
-  order: Order; tip: number; setTip: (n: number) => void; method: string; setMethod: (m: any) => void;
-  paying: boolean; onPay: () => void; onBack: () => void;
+function PayView({ order, sessionOrders, tip, setTip, method, setMethod, paying, onPay, onBack }: {
+  order: Order; sessionOrders: Order[]; tip: number; setTip: (n: number) => void;
+  method: string; setMethod: (m: any) => void; paying: boolean; onPay: () => void; onBack: () => void;
 }) {
   const tipOptions = [0, 10, 20, 50, 100];
-  const grandTotal = order.total + tip;
+  // Aggregate all payable orders for the bill preview.
+  const payable = sessionOrders.filter((o) => o.paymentStatus === 'unpaid' && ['served', 'ready'].includes(o.status));
+  const billSubtotal = payable.reduce((s, o) => s + o.subtotal, 0);
+  const billTax = payable.reduce((s, o) => s + o.taxAmount, 0);
+  const billService = payable.reduce((s, o) => s + o.serviceChargeAmount, 0);
+  const billBase = billSubtotal + billTax + billService;
+  const grandTotal = billBase + tip;
+
   return (
     <div className="space-y-4">
       <button onClick={onBack} className="btn-ghost text-sm"><ChevronLeft className="w-4 h-4" /> Back</button>
+
+      {/* Aggregated bill */}
+      <div className="card p-4">
+        <h3 className="font-semibold text-gray-800 mb-3 text-sm">
+          Bill summary ({payable.length} order{payable.length !== 1 ? 's' : ''})
+        </h3>
+        <div className="space-y-1 text-sm">
+          {payable.map((o) => (
+            <div key={o._id} className="flex justify-between text-gray-600">
+              <span>{o.orderNumber}</span>
+              <span>{formatCurrency(o.total)}</span>
+            </div>
+          ))}
+        </div>
+        <div className="border-t mt-3 pt-2 space-y-1 text-sm">
+          <div className="flex justify-between text-gray-600"><span>Subtotal</span><span>{formatCurrency(billSubtotal)}</span></div>
+          {billTax > 0 && <div className="flex justify-between text-gray-600"><span>Tax</span><span>{formatCurrency(billTax)}</span></div>}
+          {billService > 0 && <div className="flex justify-between text-gray-600"><span>Service</span><span>{formatCurrency(billService)}</span></div>}
+        </div>
+      </div>
 
       <div className="card p-4">
         <h3 className="font-semibold text-gray-800 mb-3 text-sm">Choose payment method</h3>
@@ -455,7 +683,7 @@ function PayView({ order, tip, setTip, method, setMethod, paying, onPay, onBack 
       </div>
 
       <div className="card p-4 space-y-2 text-sm">
-        <div className="flex justify-between text-gray-600"><span>Bill total</span><span>{formatCurrency(order.total)}</span></div>
+        <div className="flex justify-between text-gray-600"><span>Bill total</span><span>{formatCurrency(billBase)}</span></div>
         <div className="flex justify-between text-gray-600"><span>Tip</span><span>{formatCurrency(tip)}</span></div>
         <div className="border-t pt-2 flex justify-between font-semibold text-gray-800"><span>Grand Total</span><span>{formatCurrency(grandTotal)}</span></div>
       </div>
@@ -468,18 +696,22 @@ function PayView({ order, tip, setTip, method, setMethod, paying, onPay, onBack 
   );
 }
 
-function ThankYouView({ order }: { order: Order }) {
+function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: Order[] }) {
   const [rating, setRating] = useState(0);
   const [foodRating, setFoodRating] = useState(0);
   const [serviceRating, setServiceRating] = useState(0);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [googleUrl, setGoogleUrl] = useState('');
+  const [closed, setClosed] = useState(false);
+
+  const grandTotal = sessionOrders.filter((o) => o.paymentStatus === 'paid')
+    .reduce((s, o) => s + o.total, 0);
 
   async function submitReview() {
     if (rating < 1) { toast.error('Please pick an overall rating'); return; }
     setSubmitting(true);
-    const { data, error, ok } = await api<{ googleReviewUrl: string }>('/api/reviews', {
+    const { data, error, ok } = await api<{ googleReviewUrl: string; sessionClosed: boolean }>('/api/reviews', {
       method: 'POST',
       body: JSON.stringify({
         order: order._id,
@@ -492,6 +724,19 @@ function ThankYouView({ order }: { order: Order }) {
     if (!ok) { toast.error(error || 'Failed'); return; }
     toast.success('Thanks for your feedback!');
     setGoogleUrl(data!.googleReviewUrl || '');
+    setClosed(!!data!.sessionClosed);
+  }
+
+  // After the review is submitted and the Google link shown, attempt to close
+  // the tab. Browsers only allow window.close() on tabs the script opened; we
+  // provide a fallback message if it can't close programmatically.
+  function closeTab() {
+    setTimeout(() => {
+      window.close();
+      // Fallback: if the tab didn't close (most QR-scanned tabs can't), show
+      // a friendly message instead of leaving the user on a dead page.
+      setClosed(true);
+    }, 100);
   }
 
   return (
@@ -500,7 +745,7 @@ function ThankYouView({ order }: { order: Order }) {
         <CheckCircle2 className="w-14 h-14 text-emerald-500 mx-auto mb-2" />
         <h2 className="text-xl font-bold text-gray-800">Thank you!</h2>
         <p className="text-sm text-gray-500 mt-1">
-          Your payment of <strong>{formatCurrency(order.total)}</strong> for {order.orderNumber} is confirmed.
+          Your payment of <strong>{formatCurrency(grandTotal)}</strong> is confirmed.
         </p>
       </div>
 
@@ -546,12 +791,12 @@ function ThankYouView({ order }: { order: Order }) {
         </div>
       )}
 
-      {googleUrl && (
+      {googleUrl && !closed && (
         <div className="card p-5 text-center">
           <Star className="w-10 h-10 text-amber-400 mx-auto mb-2" />
-          <h3 className="font-semibold text-gray-800">Help us on Google</h3>
+          <h3 className="font-semibold text-gray-800">Thanks for your feedback!</h3>
           <p className="text-sm text-gray-500 mt-1 mb-4">
-            Would you mind posting your review on Google too? It really helps our small business.
+            Your dining session has ended. You can post on Google too — then this page will close automatically.
           </p>
           {googleUrl && googleUrl.includes('YOUR_PLACE_ID') ? (
             <p className="text-xs text-amber-600 bg-amber-50 rounded-lg p-3">
@@ -562,7 +807,20 @@ function ThankYouView({ order }: { order: Order }) {
               <Star className="w-4 h-4" /> Post on Google Reviews
             </a>
           )}
-          <a href="/" className="btn-ghost w-full mt-2">Done</a>
+          <button onClick={closeTab} className="btn-secondary w-full mt-2">
+            <CheckCircle2 className="w-4 h-4" /> Done — Close this page
+          </button>
+        </div>
+      )}
+
+      {googleUrl && closed && (
+        <div className="card p-6 text-center">
+          <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-2" />
+          <h3 className="font-semibold text-gray-800">All done!</h3>
+          <p className="text-sm text-gray-500 mt-1">
+            Your session has ended. You can close this page now. We hope to see you again at Lipi Snacks!
+          </p>
+          <a href="/" className="btn-ghost w-full mt-3">Back to home</a>
         </div>
       )}
     </div>

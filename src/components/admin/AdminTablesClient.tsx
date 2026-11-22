@@ -2,8 +2,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '@/lib/apiClient';
 import { toast } from 'sonner';
-import { formatCurrency, timeAgo } from '@/lib/utils';
-import { Plus, Trash2, QrCode, Download, Loader2, Users } from 'lucide-react';
+import { Plus, Trash2, QrCode, Download, Loader2, Users, Clock } from 'lucide-react';
 
 interface TableItem {
   _id: string;
@@ -11,15 +10,38 @@ interface TableItem {
   name: string;
   seats: number;
   active: boolean;
-  currentSession?: { sessionId: string; startedAt: string; customerName?: string } | null;
+  currentSession?: {
+    sessionId: string;
+    startedAt: string;
+    customerName?: string;
+    customerMobile?: string;
+    sessionStatus?: 'active' | 'paid' | 'completed' | 'closed';
+  } | null;
   qrUrl: string;
 }
+
+/** Format a duration in ms as H:MM:SS for the live ticker. */
+function formatDuration(ms: number): string {
+  const totalSec = Math.floor(Math.max(0, ms) / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+const SESSION_STATUS_LABEL: Record<string, string> = {
+  active: 'Dining',
+  paid: 'Paid — pending review',
+  completed: 'Ready to free',
+  closed: 'Closed',
+};
 
 export default function AdminTablesClient() {
   const [tables, setTables] = useState<TableItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [qrTable, setQrTable] = useState<TableItem | null>(null);
+  const [now, setNow] = useState(Date.now());
 
   const load = useCallback(async () => {
     const { data, ok } = await api<{ tables: TableItem[] }>('/api/tables');
@@ -28,6 +50,18 @@ export default function AdminTablesClient() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Tick every second so the live occupied-time counter updates.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Poll the tables every 15s so new occupied tables appear without a refresh.
+  useEffect(() => {
+    const t = setInterval(load, 15000);
+    return () => clearInterval(t);
+  }, [load]);
 
   async function addTable() {
     setAdding(true);
@@ -58,6 +92,14 @@ export default function AdminTablesClient() {
     load();
   }
 
+  async function freeTable(t: TableItem) {
+    if (!confirm(`Free ${t.name}? This closes the current dining session.`)) return;
+    const { error, ok } = await api(`/api/tables/${t._id}/free`, { method: 'POST' });
+    if (!ok) { toast.error(error || 'Failed'); return; }
+    toast.success(`${t.name} is now free`);
+    load();
+  }
+
   function downloadQr(t: TableItem) {
     const a = document.createElement('a');
     a.href = `/api/tables/${t._id}/qr?size=600`;
@@ -67,6 +109,8 @@ export default function AdminTablesClient() {
     a.remove();
   }
 
+  const occupiedCount = tables.filter((t) => t.currentSession?.sessionId).length;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -74,10 +118,15 @@ export default function AdminTablesClient() {
           <h1 className="text-2xl font-bold text-gray-800">Tables &amp; QR Codes</h1>
           <p className="text-sm text-gray-500">Print the QR for each table — customers scan it to open the menu.</p>
         </div>
-        <button onClick={addTable} disabled={adding} className="btn-primary">
-          {adding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-          Add Table
-        </button>
+        <div className="flex items-center gap-3">
+          <span className="badge bg-amber-100 text-amber-700">
+            <Clock className="w-3 h-3 mr-1" /> {occupiedCount} occupied
+          </span>
+          <button onClick={addTable} disabled={adding} className="btn-primary">
+            {adding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            Add Table
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -88,48 +137,66 @@ export default function AdminTablesClient() {
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {tables.map((t) => (
-            <div key={t._id} className="card p-4">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h3 className="font-semibold text-gray-800">{t.name}</h3>
-                  <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
-                    <Users className="w-3 h-3" /> {t.seats} seats
-                  </p>
+          {tables.map((t) => {
+            const cs = t.currentSession;
+            const occupied = !!cs?.sessionId;
+            const startedAt = cs?.startedAt ? new Date(cs.startedAt).getTime() : 0;
+            const liveMs = occupied ? now - startedAt : 0;
+            const status = cs?.sessionStatus || 'active';
+            return (
+              <div key={t._id} className="card p-4">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="font-semibold text-gray-800">{t.name}</h3>
+                    <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
+                      <Users className="w-3 h-3" /> {t.seats} seats
+                    </p>
+                  </div>
+                  <span className={`badge ${t.active ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                    {t.active ? 'Active' : 'Inactive'}
+                  </span>
                 </div>
-                <span className={`badge ${t.active ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {t.active ? 'Active' : 'Inactive'}
-                </span>
-              </div>
 
-              {t.currentSession?.sessionId ? (
-                <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 p-2 text-xs text-amber-800">
-                  <p className="font-medium">Currently occupied</p>
-                  <p className="opacity-80">
-                    {t.currentSession.customerName ? `${t.currentSession.customerName} · ` : ''}
-                    since {timeAgo(t.currentSession.startedAt)}
-                  </p>
+                {occupied ? (
+                  <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">{SESSION_STATUS_LABEL[status] || status}</span>
+                      <span className="font-mono font-semibold text-amber-900 flex items-center gap-1">
+                        <Clock className="w-3 h-3" /> {formatDuration(liveMs)}
+                      </span>
+                    </div>
+                    <p className="opacity-80 mt-1">
+                      {cs?.customerName ? `${cs.customerName}` : 'Guest'}
+                      {cs?.customerMobile ? ` · ${cs.customerMobile}` : ''}
+                    </p>
+                    <p className="opacity-60 mt-0.5">since {new Date(cs!.startedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</p>
+                  </div>
+                ) : (
+                  <p className="mt-3 text-xs text-gray-400">Free</p>
+                )}
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button onClick={() => setQrTable(t)} className="btn-secondary text-xs">
+                    <QrCode className="w-3.5 h-3.5" /> View QR
+                  </button>
+                  <button onClick={() => downloadQr(t)} className="btn-secondary text-xs">
+                    <Download className="w-3.5 h-3.5" /> PNG
+                  </button>
+                  {occupied && (
+                    <button onClick={() => freeTable(t)} className="btn-ghost text-xs text-red-600 hover:bg-red-50">
+                      Free
+                    </button>
+                  )}
+                  <button onClick={() => toggleActive(t)} className="btn-ghost text-xs">
+                    {t.active ? 'Disable' : 'Enable'}
+                  </button>
+                  <button onClick={() => removeTable(t)} className="btn-ghost text-xs text-red-600">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-              ) : (
-                <p className="mt-3 text-xs text-gray-400">Free</p>
-              )}
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button onClick={() => setQrTable(t)} className="btn-secondary text-xs">
-                  <QrCode className="w-3.5 h-3.5" /> View QR
-                </button>
-                <button onClick={() => downloadQr(t)} className="btn-secondary text-xs">
-                  <Download className="w-3.5 h-3.5" /> PNG
-                </button>
-                <button onClick={() => toggleActive(t)} className="btn-ghost text-xs">
-                  {t.active ? 'Disable' : 'Enable'}
-                </button>
-                <button onClick={() => removeTable(t)} className="btn-ghost text-xs text-red-600">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

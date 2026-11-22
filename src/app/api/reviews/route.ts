@@ -1,7 +1,15 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import dbConnect from '@/lib/db';
 import Review from '@/models/Review';
-import { getSession } from '@/lib/auth';
+import CustomerSession from '@/models/CustomerSession';
+import Table from '@/models/Table';
+import Order from '@/models/Order';
+import {
+  getSession,
+  resolveCustomerSessionId,
+  getCustomerSessionId,
+  clearCustomerSessionCookie,
+} from '@/lib/auth';
 import { ok, fail } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
@@ -22,17 +30,43 @@ export async function GET(req: NextRequest) {
   return ok({ reviews, summary });
 }
 
-// POST /api/reviews  -> customer submits a review after eating
+/**
+ * POST /api/reviews  -> customer submits a review after eating
+ *
+ * Marks the customer's dining session as `completed` (reviewAt set) and
+ * clears the rms_customer_session cookie so the next scan starts fresh.
+ * The table is NOT auto-freed here — staff confirm the table is physically
+ * cleared and then free it from the staff portal.
+ */
 export async function POST(req: NextRequest) {
   await dbConnect();
   const body = await req.json();
-  const { order, tableNumber, customerName, rating, foodRating, serviceRating, ambianceRating, comment } = body || {};
+  const {
+    order, tableNumber, customerName, rating, foodRating, serviceRating,
+    ambianceRating, comment,
+  } = body || {};
   if (!rating || rating < 1 || rating > 5) return fail('rating (1-5) is required', 422);
+
+  // Resolve the customer dining session from the cookie (if any).
+  const custSessionId = await resolveCustomerSessionId(req);
+  let custSession: any = null;
+  let customerId: string | undefined;
+  let mobile: string | undefined;
+  if (custSessionId) {
+    custSession = await CustomerSession.findOne({ sessionId: custSessionId });
+    if (custSession) {
+      customerId = String(custSession.customer);
+      mobile = custSession.mobile;
+    }
+  }
 
   const review = await Review.create({
     order: order || undefined,
-    tableNumber: tableNumber || undefined,
-    customerName: customerName || 'Anonymous',
+    session: custSession?._id || undefined,
+    tableNumber: tableNumber || custSession?.tableNumber || undefined,
+    customer: customerId || undefined,
+    customerName: customerName || custSession?.customerName || 'Anonymous',
+    mobile: mobile || '',
     rating: Number(rating),
     foodRating: Number(foodRating) || 0,
     serviceRating: Number(serviceRating) || 0,
@@ -41,7 +75,26 @@ export async function POST(req: NextRequest) {
     postedToGoogle: false,
   });
 
+  // Mark the dining session completed and the table's sessionStatus too.
+  if (custSession) {
+    custSession.status = 'completed';
+    custSession.reviewAt = new Date();
+    await custSession.save();
+    await Table.updateOne(
+      { _id: custSession.table },
+      { $set: { 'currentSession.sessionStatus': 'completed' } },
+    );
+  }
+
   // Provide the Google review URL so the frontend can redirect the customer.
   const googleUrl = process.env.GOOGLE_REVIEW_URL || '';
-  return ok({ review, googleReviewUrl: googleUrl });
+  const res = NextResponse.json({
+    review,
+    googleReviewUrl: googleUrl,
+    sessionClosed: !!custSession,
+  }, { status: 200 });
+
+  // End the customer's dining session cookie now that the meal+review is done.
+  clearCustomerSessionCookie(res);
+  return res;
 }

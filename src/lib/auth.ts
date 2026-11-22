@@ -169,3 +169,59 @@ export async function resolveSession(
 export function toObjectId(id: string): Types.ObjectId {
   return new Types.ObjectId(id);
 }
+
+/* ------------------------------------------------------------------ *
+ * Customer dining session (a totally separate, lightweight cookie so *
+ * a diner's session never collides with staff/chef/admin sessions). *
+ * ------------------------------------------------------------------ */
+
+/** Cookie name holding the customer's dining-session id (opaque token). */
+export const CUSTOMER_SESSION_COOKIE = 'rms_customer_session';
+const CUSTOMER_COOKIE_MAX_AGE = 60 * 60 * 8; // 8h — covers any reasonable meal
+
+export interface CustomerCookiePayload {
+  sessionId: string;
+  customerId: string;
+  tableNumber: number;
+}
+
+/** Server-side: set the customer dining-session cookie on a response. */
+export function setCustomerSessionCookie(res: NextResponse, sessionId: string): void {
+  res.cookies.set(CUSTOMER_SESSION_COOKIE, sessionId, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: CUSTOMER_COOKIE_MAX_AGE,
+  });
+}
+
+/** Server-side: read the customer dining-session id from the cookie. */
+export async function getCustomerSessionId(): Promise<string | null> {
+  const store = await cookies();
+  return store.get(CUSTOMER_SESSION_COOKIE)?.value || null;
+}
+
+/** Read the customer session id directly off a NextRequest (fallback). */
+export function getCustomerSessionIdFromRequest(req: NextRequest): string | undefined {
+  return req.cookies.get(CUSTOMER_SESSION_COOKIE)?.value;
+}
+
+/** Resolve the customer session id, trying next/headers then the request. */
+export async function resolveCustomerSessionId(req: NextRequest): Promise<string | null> {
+  const direct = await getCustomerSessionId();
+  if (direct) return direct;
+  return getCustomerSessionIdFromRequest(req) || null;
+}
+
+/** Server-side: clear the customer dining-session cookie (end of meal). */
+export function clearCustomerSessionCookie(res: NextResponse): void {
+  res.cookies.set(CUSTOMER_SESSION_COOKIE, '', { path: '/', maxAge: 0 });
+}
+
+/** Generate an opaque, URL-safe session token for a dining session. */
+export function generateCustomerSessionId(): string {
+  const random = Math.random().toString(36).slice(2, 10);
+  const time = Date.now().toString(36);
+  return `cs-${time}-${random}`;
+}

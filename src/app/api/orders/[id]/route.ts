@@ -2,7 +2,8 @@ import { NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import Order from '@/models/Order';
 import Table from '@/models/Table';
-import { resolveSession } from '@/lib/auth';
+import CustomerSession from '@/models/CustomerSession';
+import { resolveSession, resolveCustomerSessionId } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
@@ -89,31 +90,97 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       return ok({ order });
     }
     case 'pay': {
-      // Customer pays the bill (cash / upi / card). Optionally adds a tip.
+      // Customer pays the bill (cash / upi / card). Aggregates ALL unpaid
+      // served/ready orders in this dining session (the order id in the URL is
+      // just the anchor that tells us which session to settle). Optionally a tip.
       const { paymentMethod, tip = 0 } = body;
       if (!['cash', 'upi', 'card'].includes(paymentMethod)) return fail('Invalid payment method', 422);
-      if (!['served', 'ready'].includes(order.status)) {
-        return fail('Pay only after the order is served/ready', 422);
+
+      // Collect every unpaid order that belongs to the same session and is at
+      // least ready/served. Still-preparing orders are excluded (the customer
+      // should wait or pay them in a follow-up).
+      const sessionOrders = await Order.find({
+        sessionId: order.sessionId,
+        paymentStatus: 'unpaid',
+        status: { $in: ['served', 'ready'] },
+      });
+
+      if (sessionOrders.length === 0) {
+        return fail('No payable orders yet — wait for your food to be served', 422);
       }
-      order.paymentMethod = paymentMethod;
-      order.paymentStatus = 'paid';
-      order.tip = Math.max(0, Number(tip) || 0);
-      order.total = order.subtotal + order.taxAmount + order.serviceChargeAmount + order.tip;
-      order.status = 'completed';
-      order.completedAt = new Date();
+
+      const tipAmount = Math.max(0, Number(tip) || 0);
+      let subtotalSum = 0, taxSum = 0, serviceSum = 0;
+      for (const o of sessionOrders) {
+        subtotalSum += o.subtotal;
+        taxSum += o.taxAmount;
+        serviceSum += o.serviceChargeAmount;
+        o.paymentMethod = paymentMethod;
+        o.paymentStatus = 'paid';
+        o.tip = 0;
+        o.total = o.subtotal + o.taxAmount + o.serviceChargeAmount;
+        o.status = 'completed';
+        o.completedAt = new Date();
+        await o.save();
+      }
+
+      // Attach the tip to the anchor order so it shows in the bill/receipt.
+      order.tip = tipAmount;
+      order.total = order.subtotal + order.taxAmount + order.serviceChargeAmount + tipAmount;
       await order.save();
 
-      // If no other unpaid orders for this table session, free the table.
+      const grandTotal = subtotalSum + taxSum + serviceSum + tipAmount;
+
+      // Mark the CustomerSession as paid + endedAt.
+      const custSessionId = await resolveCustomerSessionId(req);
+      let custSession: any = null;
+      if (custSessionId) {
+        custSession = await CustomerSession.findOne({ sessionId: custSessionId });
+        if (custSession) {
+          custSession.status = 'paid';
+          custSession.endedAt = new Date();
+          custSession.orderCount = sessionOrders.length;
+          custSession.subtotal = subtotalSum;
+          custSession.taxAmount = taxSum;
+          custSession.serviceChargeAmount = serviceSum;
+          custSession.tip = tipAmount;
+          custSession.total = grandTotal;
+          await custSession.save();
+
+          // Mark the table session status as 'paid' (still occupied until review/staff frees it).
+          await Table.updateOne(
+            { _id: order.table },
+            { $set: { 'currentSession.sessionStatus': 'paid' } },
+          );
+        }
+      }
+
+      // If no other unpaid orders remain for this table session, the table is
+      // ready to be freed by staff after the review. (We do NOT auto-free here;
+      // staff confirms the table is physically cleared.)
       const remaining = await Order.countDocuments({
         table: order.table,
         sessionId: order.sessionId,
-        _id: { $ne: order._id },
         paymentStatus: 'unpaid',
       });
-      if (remaining === 0) {
-        await Table.updateOne({ _id: order.table }, { $unset: { currentSession: '' } });
-      }
-      return ok({ order });
+
+      return ok({
+        order,
+        paidOrders: sessionOrders.map((o) => o._id),
+        session: custSession ? {
+          status: custSession.status,
+          endedAt: custSession.endedAt,
+          total: custSession.total,
+          tip: custSession.tip,
+          orderCount: custSession.orderCount,
+        } : null,
+        remainingUnpaid: remaining,
+        grandTotal,
+        subtotal: subtotalSum,
+        taxAmount: taxSum,
+        serviceChargeAmount: serviceSum,
+        tip: tipAmount,
+      });
     }
     case 'rate': {
       // Customer rates the food/service after payment.

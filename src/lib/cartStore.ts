@@ -15,12 +15,14 @@ interface CartState {
   tableNumber: number | null;
   sessionId: string;
   customerName: string;
+  customerMobile: string;
   items: CartItem[];
   taxRate: number;
   serviceChargeRate: number;
   setTable: (n: number) => void;
   setSession: (s: string) => void;
   setCustomerName: (n: string) => void;
+  setCustomerMobile: (m: string) => void;
   add: (item: CartItem) => void;
   remove: (id: string) => void;
   setQty: (id: string, qty: number) => void;
@@ -38,12 +40,14 @@ export const useCart = create<CartState>()(
       tableNumber: null,
       sessionId: '',
       customerName: '',
+      customerMobile: '',
       items: [],
       taxRate: 0,           // adjust per restaurant policy
       serviceChargeRate: 0, // adjust per restaurant policy
       setTable: (n) => set({ tableNumber: n }),
       setSession: (s) => set({ sessionId: s }),
       setCustomerName: (n) => set({ customerName: n }),
+      setCustomerMobile: (m) => set({ customerMobile: m }),
       add: (item) => {
         const items = [...get().items];
         const idx = items.findIndex((i) => i.menuItem === item.menuItem);

@@ -3,6 +3,8 @@ import dbConnect from '@/lib/db';
 import Order from '@/models/Order';
 import MenuItem from '@/models/MenuItem';
 import Table from '@/models/Table';
+import CustomerSession from '@/models/CustomerSession';
+import { resolveCustomerSessionId } from '@/lib/auth';
 import { ok, fail, generateOrderNumber } from '@/lib/utils';
 import { Types } from 'mongoose';
 
@@ -14,6 +16,7 @@ export const dynamic = 'force-dynamic';
  *  - staff : default returns { ready, served }
  *  - admin : all today's orders
  *  - customer?sessionId=... : only that session's orders
+ *  - customer?table=...&unpaid=true : unpaid orders for a table
  */
 export async function GET(req: NextRequest) {
   await dbConnect();
@@ -21,6 +24,8 @@ export async function GET(req: NextRequest) {
   const status = searchParams.get('status');
   const sessionId = searchParams.get('sessionId');
   const role = searchParams.get('role');
+  const tableNumber = searchParams.get('table');
+  const unpaidOnly = searchParams.get('unpaid') === 'true';
   const limit = Math.min(Number(searchParams.get('limit') || '100'), 300);
 
   const filter: Record<string, unknown> = {};
@@ -37,6 +42,8 @@ export async function GET(req: NextRequest) {
     filter.createdAt = { $gte: start };
   }
   if (sessionId) filter.sessionId = sessionId;
+  if (unpaidOnly) filter.paymentStatus = 'unpaid';
+  if (tableNumber) filter.tableNumber = Number(tableNumber);
 
   const orders = await Order.find(filter)
     .sort({ createdAt: -1 })
@@ -52,6 +59,11 @@ export async function GET(req: NextRequest) {
  *   tableNumber, sessionId, customerName?, items: [{ menuItem, quantity, note? }],
  *   taxRate?, serviceChargeRate?, notes?
  * }
+ *
+ * The customer's dining session is resolved from the rms_customer_session
+ * cookie (set at QR-scan registration). The order is linked to both the
+ * Customer and the CustomerSession so multiple orders in one sitting can be
+ * billed together.
  */
 export async function POST(req: NextRequest) {
   await dbConnect();
@@ -64,6 +76,16 @@ export async function POST(req: NextRequest) {
 
   const table = await Table.findOne({ number: Number(tableNumber), active: true });
   if (!table) return fail('Invalid or inactive table', 404);
+
+  // Resolve the customer dining session from the cookie.
+  const customerSessionId = await resolveCustomerSessionId(req);
+  let custSession: any = null;
+  if (customerSessionId) {
+    custSession = await CustomerSession.findOne({ sessionId: customerSessionId });
+    if (custSession && (custSession.status === 'paid' || custSession.status === 'completed' || custSession.status === 'closed')) {
+      return fail('Your dining session has ended. Please ask staff for assistance.', 422);
+    }
+  }
 
   // Validate every menu item and compute subtotal from server-side prices (never trust client price).
   const ids = items.map((i: { menuItem: string }) => new Types.ObjectId(i.menuItem));
@@ -96,6 +118,8 @@ export async function POST(req: NextRequest) {
     table: table._id,
     tableNumber: table.number,
     sessionId,
+    customer: custSession?.customer || undefined,
+    customerMobile: custSession?.mobile || '',
     items: orderItems,
     subtotal,
     taxRate: Number(taxRate),
@@ -106,7 +130,7 @@ export async function POST(req: NextRequest) {
     total,
     status: 'pending',
     paymentStatus: 'unpaid',
-    customerName: customerName || '',
+    customerName: customerName || custSession?.customerName || '',
     notes: notes || '',
   });
 
@@ -114,10 +138,20 @@ export async function POST(req: NextRequest) {
   if (!table.currentSession?.sessionId) {
     table.currentSession = {
       sessionId,
-      startedAt: new Date(),
-      customerName: customerName || '',
+      startedAt: custSession?.startedAt || new Date(),
+      customerName: customerName || custSession?.customerName || '',
+      customerMobile: custSession?.mobile || '',
+      sessionStatus: 'active',
     };
     await table.save();
+  }
+
+  // Bump the session's order count.
+  if (custSession) {
+    await CustomerSession.updateOne(
+      { _id: custSession._id },
+      { $inc: { orderCount: 1 } },
+    );
   }
 
   return ok({ order }, { status: 201 });

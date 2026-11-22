@@ -24,6 +24,8 @@ export interface IOrder extends Document {
   table: Types.ObjectId;
   tableNumber: number;
   sessionId: string;          // groups multiple orders from one seating
+  customer?: Types.ObjectId;  // ref Customer (the diner who placed this order)
+  customerMobile?: string;    // denormalised for lookups
   items: OrderItem[];
   subtotal: number;
   taxRate: number;            // percentage, e.g. 5
@@ -67,6 +69,8 @@ const OrderSchema = new Schema<IOrder>(
     table: { type: Schema.Types.ObjectId, ref: 'Table', required: true, index: true },
     tableNumber: { type: Number, required: true },
     sessionId: { type: String, required: true, index: true },
+    customer: { type: Schema.Types.ObjectId, ref: 'Customer', index: true },
+    customerMobile: { type: String, default: '' },
     items: { type: [OrderItemSchema], default: [] },
     subtotal: { type: Number, default: 0, min: 0 },
     taxRate: { type: Number, default: 0 },

@@ -1,4 +1,4 @@
-import mongoose, { Schema, Document } from 'mongoose';
+import mongoose, { Schema, Document, Types } from 'mongoose';
 
 export interface ITable extends Document {
   number: number;
@@ -10,6 +10,8 @@ export interface ITable extends Document {
     sessionId: string;
     startedAt: Date;
     customerName?: string;
+    customerMobile?: string;
+    sessionStatus?: 'active' | 'paid' | 'completed' | 'closed';
   };
   createdAt: Date;
   updatedAt: Date;
@@ -25,6 +27,8 @@ const TableSchema = new Schema<ITable>(
       sessionId: { type: String, default: '' },
       startedAt: { type: Date },
       customerName: { type: String, default: '' },
+      customerMobile: { type: String, default: '' },
+      sessionStatus: { type: String, enum: ['active', 'paid', 'completed', 'closed'], default: 'active' },
     },
   },
   { timestamps: true }
