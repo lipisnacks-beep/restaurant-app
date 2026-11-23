@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { api } from '@/lib/apiClient';
+import { api, getTabUser, getTabToken, clearTabIdentity } from '@/lib/apiClient';
 import { toast } from 'sonner';
 import { timeAgo } from '@/lib/utils';
 import {
@@ -27,6 +27,25 @@ export default function ChefPortalClient() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+
+  // --- Per-tab chef identity ---
+  // Each browser tab carries its own identity token (sessionStorage), so two
+  // chefs logging in on the same browser keep separate identities. We surface
+  // the signed-in chef's name in the header so it's visually obvious which
+  // chef this tab belongs to. If a tab somehow reaches the portal without a
+  // per-tab token (e.g. opened the URL directly), bounce to login to
+  // establish one — the shared cookie alone is NOT enough identity.
+  const [chefName, setChefName] = useState<string>('');
+
+  useEffect(() => {
+    const token = getTabToken();
+    const user = getTabUser<{ name?: string; email?: string; role?: string }>();
+    if (!token || !user || user.role !== 'chef') {
+      router.replace('/chef/login');
+      return;
+    }
+    setChefName(user.name || user.email || 'Chef');
+  }, [router]);
 
   // --- Sound state ---
   // Browsers block audio playback until the user interacts with the page. We
@@ -202,7 +221,9 @@ export default function ChefPortalClient() {
             <ChefHat className="w-6 h-6" />
             <div>
               <h1 className="font-semibold leading-none">Chef Portal</h1>
-              <p className="text-xs text-rose-100">Live order kitchen display</p>
+              <p className="text-xs text-rose-100">
+                {chefName ? `Signed in as ${chefName}` : 'Live order kitchen display'}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -227,7 +248,11 @@ export default function ChefPortalClient() {
               <UserCog className="w-4 h-4" />
             </Link>
             <button
-              onClick={() => { api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'chef' }) }); router.push('/'); }}
+              onClick={() => {
+                clearTabIdentity();
+                api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'chef' }) });
+                router.push('/');
+              }}
               className="btn-ghost text-white hover:bg-white/10"
             >
               <LogOut className="w-4 h-4" />

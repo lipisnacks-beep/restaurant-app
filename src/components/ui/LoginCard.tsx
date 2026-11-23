@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { api } from '@/lib/apiClient';
+import { api, setTabIdentity } from '@/lib/apiClient';
 import { toast } from 'sonner';
 import { Loader2, LogIn } from 'lucide-react';
 
@@ -29,7 +29,7 @@ export default function LoginCard({ redirectTo, title, accent, defaultEmail = ''
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
-    const { data, error, ok } = await api<{ user?: { role: string } }>('/api/auth/login', {
+    const { data, error, ok } = await api<{ user?: { role: string; name?: string; email?: string; id?: string }; token?: string }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password, scope }),
     });
@@ -43,6 +43,13 @@ export default function LoginCard({ redirectTo, title, accent, defaultEmail = ''
       // clear only this portal's cookie so other portals stay signed in
       await api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope }) });
       return;
+    }
+    // Store this tab's identity. sessionStorage is per-tab, so a second chef
+    // logging in on another tab of the same browser gets their own identity
+    // instead of clobbering this one. The matching httpOnly cookie is also
+    // set by the server, but the per-tab Bearer token wins on data requests.
+    if (data?.token && data?.user) {
+      setTabIdentity(data.token, { ...data.user, scope });
     }
     toast.success('Welcome back!');
     router.push(redirectTo);

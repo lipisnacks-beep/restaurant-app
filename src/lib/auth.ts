@@ -191,6 +191,28 @@ export async function resolveSessionForRoles(
   preferredRole?: Role,
 ): Promise<SessionPayload | null> {
   if (allowedRoles.length === 0) return null;
+
+  /**
+   * PER-TAB IDENTITY (Bearer token takes priority).
+   *
+   * There is only ONE rms_chef_session cookie per browser. If Chef B logs in
+   * on a second tab on the same browser, that cookie is overwritten and Chef
+   * A's still-open tab silently becomes Chef B — accepting/claiming orders
+   * under the wrong chef. To fix this, each browser tab carries its own
+   * per-tab Bearer token (stored in sessionStorage by LoginCard, attached to
+   * every request by apiClient). The Bearer token identifies the *tab's* chef
+   * independent of the shared cookie.
+   *
+   * The cookie still serves as the "is SOME chef logged into this browser"
+   * gate for the server-component route guard (requireChef). Once past the
+   * guard, data routes use this resolver and pick the per-tab identity first.
+   */
+  const authHeader = req.headers.get('authorization');
+  if (authHeader?.startsWith('Bearer ')) {
+    const s = verifyToken(authHeader.slice(7));
+    if (s && allowedRoles.includes(s.role)) return s;
+  }
+
   const candidates: SessionPayload[] = [];
 
   // next/headers `cookies()` (server components / route handlers).

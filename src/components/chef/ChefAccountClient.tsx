@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
-import { api } from '@/lib/apiClient';
+import { api, clearTabIdentity } from '@/lib/apiClient';
 import { toast } from 'sonner';
 import {
   ChefHat, ArrowLeft, Loader2, Mail, Phone, ShieldCheck, User as UserIcon,
@@ -272,7 +272,11 @@ export default function ChefAccountClient() {
             </div>
           </div>
           <button
-            onClick={() => { api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'chef' }) }); router.push('/'); }}
+            onClick={() => {
+              clearTabIdentity();
+              api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'chef' }) });
+              router.push('/');
+            }}
             className="btn-ghost text-white hover:bg-white/10"
           >
             <LogOut className="w-4 h-4" />

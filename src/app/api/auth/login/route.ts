@@ -51,7 +51,16 @@ export async function POST(req: NextRequest) {
   });
 
   const res = NextResponse.json(
-    { user: { id: user._id, name: user.name, email: user.email, role: user.role } },
+    {
+      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      // Per-tab identity token: the client stores this in sessionStorage and
+      // attaches it as `Authorization: Bearer ...` on every request. The
+      // cookie alone is shared across the whole browser, so two chefs logging
+      // in on the same browser (different tabs) would clobber each other; the
+      // per-tab Bearer token keeps each tab tied to the chef who signed in on it.
+      token,
+      scope: resolvedScope,
+    },
     { status: 200 },
   );
   setSessionCookie(res, token, resolvedScope);
