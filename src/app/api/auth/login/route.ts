@@ -9,18 +9,19 @@ export const dynamic = 'force-dynamic';
 const VALID_SCOPES: Exclude<SessionScope, 'any'>[] = ['admin', 'chef', 'staff'];
 
 /**
- * Mark a chef as present the instant they log in. The dispatch engine treats
- * a chef as available only if they polled within the last 90s; without this
- * heartbeat, a freshly-logged-in chef would be invisible to the dispatcher
- * until their first queue poll fires (~3s later). Marking presence on login
- * means orders placed in that first 3s window still get routed to them.
+ * Mark a chef or staff member as present the instant they log in. The dispatch
+ * engines (chef + staff) treat a user as available only if they polled within
+ * the last 90s; without this heartbeat, a freshly-logged-in user would be
+ * invisible to the dispatcher until their first queue poll fires (~3s later).
+ * Marking presence on login means orders placed in that first 3s window still
+ * get routed to them.
  */
-async function markChefPresent(userId: any) {
+async function markPresent(userId: any) {
   if (!userId) return;
   try {
     await User.updateOne({ _id: userId }, { $set: { lastActiveAt: new Date() } });
   } catch {
-    /* non-fatal: dispatch will catch up on the chef's first poll */
+    /* non-fatal: dispatch will catch up on the user's first poll */
   }
 }
 
@@ -66,8 +67,10 @@ export async function POST(req: NextRequest) {
     scope: resolvedScope,
   });
 
-  // Chefs become dispatch-available immediately on login (see markChefPresent).
-  if (user.role === 'chef') await markChefPresent(user._id);
+  // Chefs and staff become dispatch-available immediately on login (see
+  // markPresent) so orders placed in the first 3s (before their first poll)
+  // still get routed to them.
+  if (user.role === 'chef' || user.role === 'staff') await markPresent(user._id);
 
   const res = NextResponse.json(
     {

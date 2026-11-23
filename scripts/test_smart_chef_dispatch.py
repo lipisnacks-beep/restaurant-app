@@ -260,7 +260,7 @@ checks = [
     ("src/app/api/orders/[id]/route.ts", "assignPendingOrdersToChefs", "mark_ready triggers dispatch sweep"),
     ("src/app/api/customer/session/route.ts", "chefName", "customer session populates chefName"),
     ("src/app/api/customer/session/route.ts", "estimatedChefAssignBy", "customer session includes TAT ETA"),
-    ("src/app/api/auth/login/route.ts", "markChefPresent", "login marks chef present"),
+    ("src/app/api/auth/login/route.ts", "markPresent", "login marks chef present"),
     ("src/models/User.ts", "lastActiveAt", "User model has lastActiveAt"),
     ("src/models/User.ts", "lastAssignedAt", "User model has lastAssignedAt"),
     ("src/models/Order.ts", "assignedAt", "Order model has assignedAt"),

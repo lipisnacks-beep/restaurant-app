@@ -1,11 +1,13 @@
 import { NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import Order from '@/models/Order';
+import User from '@/models/User';
 import Table from '@/models/Table';
 import CustomerSession from '@/models/CustomerSession';
 import { resolveSessionForRoles, resolveCustomerSessionId } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden } from '@/lib/utils';
 import { assignPendingOrdersToChefs } from '@/lib/chefDispatch';
+import { assignReadyOrdersToStaff } from '@/lib/staffDispatch';
 
 export const dynamic = 'force-dynamic';
 
@@ -86,15 +88,21 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       // This chef just freed up a slot — route any waiting orders to an
       // available chef (possibly this one) so the backlog clears promptly.
       await assignPendingOrdersToChefs();
-      return ok({ order });
+      // The order is now ready to serve — route it to ONE available staff
+      // member (least-loaded, round-robin) instead of broadcasting to all.
+      // If no staff is available, the engine stamps an ETA so the customer
+      // sees a TAT countdown.
+      await assignReadyOrdersToStaff();
+      // Re-fetch so the response reflects the staff routing (staffId etc.).
+      const refreshed = await Order.findById(order._id).lean();
+      return ok({ order: refreshed || order });
     }
     case 'accept': {
-      // Staff accepts (claims) a ready order so they are responsible for
-      // serving it. This is the staff-side mirror of the chef's
-      // 'start_preparing' action: without it, two staff members could both
-      // rush the same ready order. We use an ATOMIC update (findOneAndUpdate
-      // with a status guard) so that if two staff accept at the same instant,
-      // exactly one wins and the other gets a clear "already accepted" error.
+      // Staff confirms a ready order routed to them by the dispatch engine so
+      // they are responsible for serving it. With smart dispatch, each ready
+      // order is routed to ONE staff member — only that staff (or an admin)
+      // may accept it. This is the staff-side mirror of the chef's ownership
+      // check on 'start_preparing'.
       const session = await resolveSessionForRoles(req, ['admin', 'staff'], 'staff');
       if (!session) return unauthorized('Your session has expired — please sign in again');
       if (!['admin', 'staff'].includes(session.role)) {
@@ -108,14 +116,27 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       }
 
       // If this staff already accepted it, treat as a no-op success (idempotent
-      // re-accept, e.g. they refreshed the tab). Atomically claim it for THIS
-      // staff only if nobody has claimed it yet.
+      // re-accept, e.g. they refreshed the tab).
       if (order.staffId && String(order.staffId) === String(session.userId)) {
         return ok({ order, alreadyMine: true });
       }
 
+      // Ownership: the dispatch engine routed this order to a SPECIFIC staff.
+      // Only that staff (or an admin) may accept it — this stops two staff
+      // from grabbing the same order and keeps the customer's "your server is
+      // X" assignment accurate. An order with no staffId (no staff was
+      // available when it became ready) can be accepted by any staff as a
+      // fallback so it never gets stuck.
+      if (
+        order.staffId &&
+        session.role === 'staff' &&
+        String(order.staffId) !== String(session.userId)
+      ) {
+        return fail('This order was routed to another staff member', 422);
+      }
+
       // Atomic claim: only flip if status is still 'ready' AND no staff has
-      // claimed it yet. This is the race-safe guard.
+      // claimed it yet (or this staff is the routed owner claiming a fallback).
       const claimed = await Order.findOneAndUpdate(
         { _id: order._id, status: 'ready', staffId: { $exists: false } },
         {
@@ -127,7 +148,12 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         { new: true },
       );
       if (!claimed) {
-        // Someone else beat us to it.
+        // Either someone else beat us, or this staff IS the routed owner and
+        // the order already had staffId set (the ownership check above passed
+        // because staffId == me). In the latter case just return the order.
+        if (order.staffId && String(order.staffId) === String(session.userId)) {
+          return ok({ order, alreadyMine: true });
+        }
         const fresh = await Order.findById(order._id);
         const who = fresh?.staffId ? ' — another staff just accepted it' : '';
         return fail(`Order is already ${fresh?.status || 'claimed'}${who}`, 422);
@@ -155,6 +181,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       order.servedAt = new Date();
       if (session.role === 'staff') order.staffId = session.userId as any;
       await order.save();
+      // This staff just freed up a serving slot — route any waiting ready
+      // orders to an available staff (possibly this one).
+      await assignReadyOrdersToStaff();
       return ok({ order });
     }
     case 'complete': {
@@ -219,6 +248,20 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       order.tip = tipAmount;
       order.total = order.subtotal + order.taxAmount + order.serviceChargeAmount + tipAmount;
       await order.save();
+
+      // Allocate the tip to the staff who served the anchor order. The
+      // dispatch engine routed this ready order to a specific staff member;
+      // when the customer tips, that tip belongs to the staff who physically
+      // brought the food to the table (order.staffId). We credit their
+      // cumulative tipsEarned so it persists across sessions and shows in
+      // their portal total. (Admin with no assigned staff: tip is not
+      // credited to anyone — there's no staff who served it.)
+      if (tipAmount > 0 && order.staffId) {
+        await User.updateOne(
+          { _id: order.staffId },
+          { $inc: { tipsEarned: tipAmount } },
+        ).exec();
+      }
 
       const grandTotal = subtotalSum + taxSum + serviceSum + tipAmount;
 

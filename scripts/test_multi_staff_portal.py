@@ -163,98 +163,84 @@ for n in range(3):
     check(s==200, f"chef marks order {n+1} ready (status {s})")
     ready_ids.append(oid)
 
-print("\n=== 3. Staff A sees all 3 unaccepted ready orders (ring all) ===")
-s,b = req(browser, "/api/orders?role=staff", bearer=tokenA)
-a_sees = [o["_id"] for o in b.get("orders",[]) if o["status"]=="ready" and not o.get("acceptedAt")]
-check(set(ready_ids).issubset(set(a_sees)), f"Staff A sees all 3 unaccepted ready orders (created={len(ready_ids)} visible={len(a_sees)})")
+print("\n=== 3. Smart dispatch: each ready order is routed to ONE staff member ===")
+# With smart dispatch, each ready order goes to ONE staff (least-loaded,
+# round-robin) — NOT broadcast to all. Only the assigned staff sees it.
+s,b = req(admin, "/api/orders?limit=300")
+routed = {}
+for oid in ready_ids:
+    o = next((x for x in b["orders"] if x["_id"]==oid), None)
+    routed[oid] = str(o.get("staffId") or "")
+unrouted = sum(1 for v in routed.values() if not v)
+check(unrouted == 0, f"all 3 ready orders routed to a staff ({unrouted} unrouted)")
 
-print("\n=== 4. Staff B also sees all 3 unaccepted ready orders ===")
-s,b = req(browser, "/api/orders?role=staff", bearer=tokenB)
-b_sees = [o["_id"] for o in b.get("orders",[]) if o["status"]=="ready" and not o.get("acceptedAt")]
-check(set(ready_ids).issubset(set(b_sees)), f"Staff B sees all 3 unaccepted ready orders (created={len(ready_ids)} visible={len(b_sees)})")
+print("\n=== 4. Each staff sees ONLY the orders routed to them (no broadcast) ===")
+# Staff A, B, C each poll. Each should see only their own routed orders, with
+# no overlap.
+s,b = req(browser, "/api/orders?role=staff&limit=300", bearer=tokenA)
+a_ids = set(o["_id"] for o in b.get("orders",[]))
+s,b = req(browser, "/api/orders?role=staff&limit=300", bearer=tokenB)
+b_ids = set(o["_id"] for o in b.get("orders",[]))
+s,b = req(browserC, "/api/orders?role=staff&limit=300", bearer=tokenC)
+c_ids = set(o["_id"] for o in b.get("orders",[]))
+check(not (a_ids & b_ids), "Staff A and B queues do not overlap")
+check(not (a_ids & c_ids), "Staff A and C queues do not overlap")
+check(not (b_ids & c_ids), "Staff B and C queues do not overlap")
 
-print("\n=== 5. ACCEPT RACE: Staff A and Staff B accept the SAME order simultaneously ===")
-# Fire both accepts with no delay between them. Exactly one must win.
-import threading
+print("\n=== 5. Ownership: a non-assigned staff CANNOT serve an order routed to another ===")
+# Pick the first ready order and find who it was routed to.
 race_order = ready_ids[0]
-results = {}
-def do_accept(name, token):
-    s,b = req(browser, f"/api/orders/{race_order}", "PATCH", body={"action":"accept"}, bearer=token)
-    results[name] = (s, b)
-tA = threading.Thread(target=do_accept, args=("A", tokenA))
-tB = threading.Thread(target=do_accept, args=("B", tokenB))
-tA.start(); tB.start(); tA.join(); tB.join()
-sa = results["A"][0]; sb = results["B"][0]
-wins = [n for n in ("A","B") if results[n][0]==200]
-loses = [n for n in ("A","B") if results[n][0]==422]
-check(len(wins)==1, f"exactly ONE staff wins the accept race (winners: {wins})")
-check(len(loses)==1, f"the other staff gets 422 (losers: {loses})")
-loser_msg = str(results[loses[0]][1].get("error",""))
-check("another staff" in loser_msg or "already" in loser_msg,
-      f"loser gets a clear 'already accepted' message ({loser_msg[:50]})")
-# Who won? Record for the ownership test.
-winner_token = tokenA if "A" in wins else tokenB
-loser_token = tokenB if "A" in wins else tokenA
-winner_name = wins[0]
-print(f"     -> {winner_name} won the race for order {race_order}")
-
-print("\n=== 6. The winning staff's order now has acceptedAt set ===")
-s,b = req(admin, "/api/orders")
-ord0 = next((o for o in b.get("orders",[]) if o["_id"]==race_order), None)
-check(ord0 is not None and ord0.get("acceptedAt") is not None, "acceptedAt timestamp set on the order")
-check(ord0.get("status")=="ready", "order is still 'ready' (accepted but not yet served)")
-
-print("\n=== 7. Ownership: the LOSING staff CANNOT serve the order the winner accepted ===")
-s,b = req(browser, f"/api/orders/{race_order}", "PATCH", body={"action":"serve"}, bearer=loser_token)
-check(s==422, f"loser staff serve attempt rejected (status {s})")
+assigned_staff = routed[race_order]
+# Identify which staff token that is.
+if assigned_staff == str(req(browser,"/api/staff/account",bearer=tokenA)[1].get("user",{}).get("id","")):
+    owner_token, nonowner_token = tokenA, tokenB
+elif assigned_staff == str(req(browser,"/api/staff/account",bearer=tokenB)[1].get("user",{}).get("id","")):
+    owner_token, nonowner_token = tokenB, tokenA
+else:
+    owner_token, nonowner_token = tokenC, tokenA
+# Non-owner tries to serve -> 422 (routed to another staff).
+s,b = req(browser, f"/api/orders/{race_order}", "PATCH", body={"action":"serve"}, bearer=nonowner_token)
+check(s==422, f"non-owner staff serve rejected (status {s})")
 check("another staff" in str(b.get("error","")).lower() or "accepted" in str(b.get("error","")).lower(),
       f"clear ownership message ({b.get('error','')[:50]})")
 
-print("\n=== 8. The WINNING staff CAN serve it ===")
-s,b = req(browser, f"/api/orders/{race_order}", "PATCH", body={"action":"serve"}, bearer=winner_token)
-check(s==200, f"winner staff serves the order (status {s})")
+print("\n=== 6. The assigned staff CAN serve it ===")
+s,b = req(browser, f"/api/orders/{race_order}", "PATCH", body={"action":"serve"}, bearer=owner_token)
+check(s==200, f"owner staff serves the order (status {s})")
+s,b = req(admin, "/api/orders")
+ord0 = next((o for o in b.get("orders",[]) if o["_id"]==race_order), None)
+check(ord0 is not None and ord0.get("acceptedAt") is not None, "acceptedAt timestamp set on the order")
+check(ord0.get("status")=="served", "order is now 'served'")
 
-print("\n=== 9. Staff C (separate browser) accepts a DIFFERENT ready order ===")
+print("\n=== 7. The assigned staff serves a second order routed to them ===")
+# Find another ready order routed to the same owner (if any) or to Staff C.
 order_c = ready_ids[1]
-s,b = req(browserC, f"/api/orders/{order_c}", "PATCH", body={"action":"accept"}, bearer=tokenC)
-check(s==200, f"Staff C accepts order 2 (status {s})")
-s,b = req(browserC, f"/api/orders/{order_c}", "PATCH", body={"action":"serve"}, bearer=tokenC)
-check(s==200, f"Staff C serves order 2 (status {s})")
+c_assigned = routed[order_c]
+if c_assigned == str(req(browserC,"/api/staff/account",bearer=tokenC)[1].get("user",{}).get("id","")):
+    s,b = req(browserC, f"/api/orders/{order_c}", "PATCH", body={"action":"accept"}, bearer=tokenC)
+    check(s==200, f"Staff C accepts order routed to them (status {s})")
+    s,b = req(browserC, f"/api/orders/{order_c}", "PATCH", body={"action":"serve"}, bearer=tokenC)
+    check(s==200, f"Staff C serves order 2 (status {s})")
+else:
+    # order_c was routed to A or B; have that owner serve it.
+    s,b = req(browser, f"/api/orders/{order_c}", "PATCH", body={"action":"serve"}, bearer=owner_token if c_assigned==assigned_staff else tokenB)
+    check(s==200, f"owner of order 2 serves it (status {s})")
 
-print("\n=== 10. Queue scoping: the winner sees THEIR served order; the loser does NOT ===")
-# The race winner could be Staff A or Staff B. Whoever won is the one who
-# served race_order. We check that the WINNER sees it in their served list and
-# the LOSER does not. Staff C served order_c independently.
-winner_token_local = tokenA if winner_name == "A" else tokenB
-loser_token_local = tokenB if winner_name == "A" else tokenA
-s,b = req(browser, "/api/orders?role=staff&limit=300", bearer=winner_token_local)
-win_served = [o["_id"] for o in b.get("orders",[]) if o["status"]=="served"]
-check(race_order in win_served, f"race WINNER ({winner_name}) sees the order they served (served list len {len(win_served)})")
-s,b = req(browser, "/api/orders?role=staff&limit=300", bearer=loser_token_local)
-lose_served = [o["_id"] for o in b.get("orders",[]) if o["status"]=="served"]
-check(race_order not in lose_served, f"race LOSER does NOT see the winner's served order")
-# Staff C cross-check.
-s,b = req(browserC, "/api/orders?role=staff&limit=300", bearer=tokenC)
-c_served = [o["_id"] for o in b.get("orders",[]) if o["status"]=="served"]
-check(order_c in c_served, "Staff C sees the order they served")
-check(race_order not in c_served, "Staff C does NOT see the winner's served order")
+print("\n=== 8. Queue scoping: each staff sees THEIR served orders only ===")
+s,b = req(browser, "/api/orders?role=staff&limit=300", bearer=owner_token)
+owner_served = [o["_id"] for o in b.get("orders",[]) if o["status"]=="served"]
+check(race_order in owner_served, f"owner sees the order they served")
+s,b = req(browser, "/api/orders?role=staff&limit=300", bearer=nonowner_token)
+nonowner_served = [o["_id"] for o in b.get("orders",[]) if o["status"]=="served"]
+check(race_order not in nonowner_served, "non-owner does NOT see the served order")
 
-print("\n=== 11. The remaining unaccepted ready order still rings for everyone ===")
-order_left = ready_ids[2]
-s,b = req(browser, "/api/orders?role=staff", bearer=tokenA)
-a_unacc = [o["_id"] for o in b.get("orders",[]) if o["status"]=="ready" and not o.get("acceptedAt")]
-check(order_left in a_unacc, "Staff A still sees the unaccepted ready order")
-s,b = req(browserC, "/api/orders?role=staff", bearer=tokenC)
-c_unacc = [o["_id"] for o in b.get("orders",[]) if o["status"]=="ready" and not o.get("acceptedAt")]
-check(order_left in c_unacc, "Staff C also sees the unaccepted ready order (rings for all)")
-
-print("\n=== 12. Staff account: GET profile ===")
+print("\n=== 9. Staff account: GET profile ===")
 s,b = req(browser, "/api/staff/account", bearer=tokenB)
 check(s==200, f"Staff B GET account (status {s})")
 check(b["user"]["email"]==STAFF_B_EMAIL, "returns Staff B's profile")
 check(b["user"]["role"]=="staff", "role is 'staff'")
 
-print("\n=== 13. Staff account: PATCH name + phone ===")
+print("\n=== 10. Staff account: PATCH name + phone ===")
 s,b = req(browser, "/api/staff/account", "PATCH",
           body={"name":"Multi Staff Two Renamed","phone":"+880 1700 999999"}, bearer=tokenB)
 check(s==200, f"Staff B PATCH name/phone (status {s})")
@@ -268,7 +254,7 @@ s,b = req(browser, "/api/staff/account", bearer=new_tokenB)
 check(b["user"]["name"]=="Multi Staff Two Renamed", "new token resolves to updated name")
 tokenB = new_tokenB  # use the refreshed token from here on
 
-print("\n=== 14. Staff account: PATCH password (requires current password) ===")
+print("\n=== 11. Staff account: PATCH password (requires current password) ===")
 s,b = req(browser, "/api/staff/account", "PATCH",
           body={"currentPassword":"wrongpw","newPassword":"newpass123"}, bearer=tokenB)
 check(s==422, f"wrong current password rejected (status {s})")
@@ -281,11 +267,11 @@ fresh = make_jar()
 s,b = req(fresh, "/api/auth/login", "POST", {"email":STAFF_B_EMAIL,"password":"newpass123","scope":"staff"})
 check(s==200, f"login with NEW password succeeds (status {s})")
 
-print("\n=== 15. Staff account: cannot set empty name ===")
+print("\n=== 12. Staff account: cannot set empty name ===")
 s,b = req(browser, "/api/staff/account", "PATCH", body={"name":"   "}, bearer=tokenB)
 check(s==422, f"empty name rejected (status {s})")
 
-print("\n=== 16. Ringtone + frontend wiring ===")
+print("\n=== 13. Ringtone + frontend wiring ===")
 # The louder doorbell ringtone file must exist and be non-trivial. Fetch RAW
 # bytes (the JSON-parsing req helper mangles binary WAV data).
 opener = urllib.request.build_opener()
@@ -327,7 +313,7 @@ for path, needle, label in checks:
     r = subprocess.run(["grep","-ql",needle,base+path], capture_output=True, text=True)
     check(r.returncode==0, label)
 
-print("\n=== 17. /staff/account page renders (HTML 200) ===")
+print("\n=== 14. /staff/account page renders (HTML 200) ===")
 s,html = req(make_jar(), "/staff/account", "GET")
 check(s==200, f"GET /staff/account (status {s})")
 # /staff/portal redirects to login when no cookie (307/302) — that's the guard.

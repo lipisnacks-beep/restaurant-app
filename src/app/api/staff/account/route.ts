@@ -30,6 +30,7 @@ function profile(u: any) {
     phone: u.phone || '',
     role: u.role,
     active: u.active,
+    tipsEarned: u.tipsEarned || 0,  // cumulative tips from orders this staff served
     createdAt: u.createdAt,
   };
 }

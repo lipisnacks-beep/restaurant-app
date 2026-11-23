@@ -7,6 +7,7 @@ import CustomerSession from '@/models/CustomerSession';
 import { resolveCustomerSessionId, resolveSessionForRoles } from '@/lib/auth';
 import { ok, fail, generateOrderNumber } from '@/lib/utils';
 import { assignPendingOrdersToChefs, touchChefPresence } from '@/lib/chefDispatch';
+import { assignReadyOrdersToStaff, touchStaffPresence } from '@/lib/staffDispatch';
 import { Types } from 'mongoose';
 
 export const dynamic = 'force-dynamic';
@@ -61,22 +62,21 @@ export async function GET(req: NextRequest) {
       filter.status = { $in: ['pending', 'preparing'] };
     }
   } else if (role === 'staff') {
-    // Resolve the calling staff so we can scope the queue to them, mirroring
-    // how the chef queue is scoped. There are three buckets a staff member
-    // sees:
-    //   1. ready orders NOT YET accepted by anyone -> ring for ALL staff so
-    //      the first available one can accept.
-    //   2. ready orders THIS staff accepted (staffId == me, still 'ready') ->
-    //      so they can serve the ones they claimed.
-    //   3. 'served' orders THIS staff delivered (staffId == me) -> awaiting
-    //      payment, shown in their "Awaiting Payment" column.
-    // Pending/preparing orders are NEVER shown to staff (that's the chef's
-    // kitchen). Served orders that another staff delivered are also hidden.
+    // The staff dispatch engine routes each ready order to ONE available
+    // staff member (least-loaded, round-robin tiebreak) — NOT broadcast to
+    // all. A staff member therefore sees ONLY orders routed to them:
+    //   1. ready orders with staffId == me (routed to me, to accept & serve)
+    //   2. served orders with staffId == me (I delivered these, awaiting
+    //      payment — and any tip will be credited to me)
+    // Polling also touches the staff's presence heartbeat and triggers a
+    // dispatch sweep so any ready order that arrived while no staff was
+    // present gets routed now that this staff is online.
     const session = await resolveSessionForRoles(req, ['admin', 'staff'], 'staff');
     if (session && session.role === 'staff') {
+      await touchStaffPresence(session.userId);
+      await assignReadyOrdersToStaff();
       const me = new Types.ObjectId(session.userId);
       filter.$or = [
-        { status: 'ready', staffId: { $exists: false } },
         { status: 'ready', staffId: me },
         { status: 'served', staffId: me },
       ];

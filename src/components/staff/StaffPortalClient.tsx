@@ -34,7 +34,7 @@ export default function StaffPortalClient() {
   const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
   const [tables, setTables] = useState<OccupiedTable[]>([]);
-  const [tipsToday, setTipsToday] = useState(0);
+  const [tipsEarned, setTipsEarned] = useState(0);  // cumulative persisted tips
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -117,22 +117,20 @@ export default function StaffPortalClient() {
   }, [router]);
 
   const load = useCallback(async () => {
-    const [ordersRes, tablesRes] = await Promise.all([
+    const [ordersRes, tablesRes, acctRes] = await Promise.all([
       api<{ orders: Order[] }>('/api/orders?role=staff&limit=50'),
       api<{ tables: OccupiedTable[] }>('/api/tables'),
+      api<{ user?: { tipsEarned?: number } }>('/api/staff/account'),
     ]);
     if (ordersRes.ok && ordersRes.data) {
       const next = ordersRes.data.orders;
       setOrders(next);
-      const todayTips = next
-        .filter((o) => o.tip && o.tip > 0)
-        .reduce((s, o) => s + (o.tip || 0), 0);
-      setTipsToday(todayTips);
-
-      // UNACCEPTED ready orders = ready AND no acceptedAt yet -> these ring
-      // for ALL staff until one accepts. Accepted-but-still-ready orders
-      // (already claimed by this staff) do NOT ring (the bell already served
-      // its purpose: alerting that something needs serving).
+      // UNACCEPTED ready orders = ready AND no acceptedAt yet. With smart
+      // dispatch the engine sets acceptedAt at routing time, so these are
+      // orders routed to me that I haven't yet acknowledged — they ring until
+      // I tap Accept. Accepted-but-still-ready orders (already claimed by this
+      // staff) do NOT ring (the bell already served its purpose: alerting
+      // that something needs serving).
       const unaccepted = next.filter((o) => o.status === 'ready' && !o.acceptedAt);
       const unacceptedIds = new Set(unaccepted.map((o) => o._id));
       const fresh = unaccepted.filter((o) => !seenUnacceptedRef.current.has(o._id));
@@ -149,6 +147,9 @@ export default function StaffPortalClient() {
     }
     if (tablesRes.ok && tablesRes.data) {
       setTables(tablesRes.data.tables.filter((t) => t.currentSession?.sessionId));
+    }
+    if (acctRes.ok && acctRes.data?.user) {
+      setTipsEarned(acctRes.data.user.tipsEarned || 0);
     }
     setLoading(false);
   }, [soundEnabled, soundMuted, playRingtone, stopRingtone]);
@@ -234,8 +235,8 @@ export default function StaffPortalClient() {
               {ringing ? <BellRing className="w-3 h-3 mr-1" /> : <Bell className="w-3 h-3 mr-1" />}
               {toAccept.length} new
             </span>
-            <span className="badge bg-amber-400/30 text-amber-50">
-              <Coins className="w-3 h-3 mr-1" /> {formatCurrency(tipsToday)} tips
+            <span className="badge bg-amber-400/30 text-amber-50" title="Cumulative tips you have earned from orders you served">
+              <Coins className="w-3 h-3 mr-1" /> {formatCurrency(tipsEarned)} tips
             </span>
             {soundEnabled && (
               <button
@@ -286,14 +287,17 @@ export default function StaffPortalClient() {
           <div className="text-gray-500 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
         ) : (
           <div className="space-y-8">
-            {/* New ready orders — accept to claim */}
+            {/* New ready orders — routed to you, accept to serve */}
             <section>
-              <h2 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
-                <Bell className="w-4 h-4 text-emerald-500" /> New Orders — Accept to Serve ({toAccept.length})
+              <h2 className="font-semibold text-gray-800 mb-1 flex items-center gap-2">
+                <Bell className="w-4 h-4 text-emerald-500" /> Routed to You — Accept to Serve ({toAccept.length})
+                {toAccept.length > 0 && soundEnabled && !soundMuted && (
+                  <span className="text-xs text-amber-600 animate-pulse">🔔 ringing</span>
+                )}
               </h2>
               <p className="text-xs text-gray-500 mb-3">
-                These orders are ready from the kitchen. Tap <strong>Accept</strong> to claim one — it then moves to your
-                “To Serve” list. The bell rings while there are unaccepted orders.
+                These ready orders were dispatched specifically to you. Tap <strong>Accept</strong> to confirm — it then moves to your
+                “To Serve” list. The bell rings while you have unaccepted orders.
               </p>
               <div className="grid gap-3 lg:grid-cols-2">
                 {toAccept.length === 0 && <p className="text-sm text-gray-400">None.</p>}

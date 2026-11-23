@@ -30,6 +30,7 @@ export async function GET(req: NextRequest) {
 
   const orders = await Order.find({ sessionId: session.sessionId })
     .populate('chefId', 'name')
+    .populate('staffId', 'name')
     .sort({ createdAt: 1 })
     .lean();
 
@@ -75,6 +76,7 @@ export async function GET(req: NextRequest) {
 
 function serializeOrder(o: any) {
   const chef: any = o.chefId;
+  const staff: any = o.staffId;
   return {
     _id: String(o._id),
     orderNumber: o.orderNumber,
@@ -95,6 +97,10 @@ function serializeOrder(o: any) {
     estimatedChefAssignBy: o.estimatedChefAssignBy || null,
     chefId: chef ? String(chef._id) : null,
     chefName: chef ? chef.name : null,
+    staffAssignedAt: o.staffAssignedAt || null,
+    estimatedStaffAssignBy: o.estimatedStaffAssignBy || null,
+    staffId: staff ? String(staff._id) : null,
+    staffName: staff ? staff.name : null,
     servedAt: o.servedAt || null,
     completedAt: o.completedAt || null,
   };

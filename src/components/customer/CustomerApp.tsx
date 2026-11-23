@@ -27,6 +27,11 @@ interface Order {
   estimatedChefAssignBy?: string | null;
   chefId?: string | null;
   chefName?: string | null;
+  // Smart-dispatch fields for the serving side (staff bringing food to the table).
+  staffAssignedAt?: string | null;
+  estimatedStaffAssignBy?: string | null;
+  staffId?: string | null;
+  staffName?: string | null;
 }
 interface CustomerInfo { _id: string; name: string; mobile: string }
 interface DiningSession {
@@ -606,6 +611,94 @@ function ChefDispatchStatus({ order }: { order: Order }) {
   return null;
 }
 
+/**
+ * Staff dispatch status banner — shown once the order is 'ready' (out of the
+ * kitchen, waiting to be served at the table).
+ *
+ * - served + staffName: "Staff X served your order — enjoy your meal!"
+ * - ready + staffName:  "Staff X is bringing your order" — routed to a server,
+ *   they're on their way.
+ * - ready + no staffName: no server available — TAT countdown "A staff member
+ *   will serve you shortly — in Ns" driven by estimatedStaffAssignBy.
+ */
+function StaffDispatchStatus({ order }: { order: Order }) {
+  const [remaining, setRemaining] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!order.estimatedStaffAssignBy) { setRemaining(null); return; }
+    const compute = () => Math.max(0, Math.round((new Date(order.estimatedStaffAssignBy!).getTime() - Date.now()) / 1000));
+    setRemaining(compute());
+    const t = setInterval(() => {
+      const r = compute();
+      setRemaining(r);
+      if (r <= 0) clearInterval(t);
+    }, 1000);
+    return () => clearInterval(t);
+  }, [order.estimatedStaffAssignBy]);
+
+  // Served: a staff delivered it to the table.
+  if (order.status === 'served' && order.staffName) {
+    return (
+      <div className="flex items-center gap-3 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2.5">
+        <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
+          <ConciergeBell className="w-5 h-5" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-emerald-800">{order.staffName} served your order</p>
+          <p className="text-xs text-emerald-600">Enjoy your meal! Your server is {order.staffName}.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Ready + a staff has been routed: they're bringing it to the table.
+  if (order.status === 'ready' && order.staffName) {
+    return (
+      <div className="flex items-center gap-3 rounded-lg bg-sky-50 border border-sky-200 px-3 py-2.5">
+        <div className="w-9 h-9 rounded-full bg-sky-500 text-white flex items-center justify-center shrink-0">
+          <ConciergeBell className="w-5 h-5" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-sky-800">{order.staffName} is bringing your order</p>
+          <p className="text-xs text-sky-600">Your food is on its way to your table.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Ready but no staff available: show the TAT countdown.
+  if (order.status === 'ready' && !order.staffName) {
+    const showCountdown = remaining !== null && remaining > 0;
+    return (
+      <div className="flex items-center gap-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
+        <div className="w-9 h-9 rounded-full bg-amber-500 text-white flex items-center justify-center shrink-0">
+          <Clock className="w-5 h-5 animate-pulse" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-amber-800">
+            {showCountdown
+              ? <>A staff member will serve you in {remaining}s</>
+              : 'Finding an available server for you…'}
+          </p>
+          <p className="text-xs text-amber-600">
+            Your order will be served at your table very shortly — please hold on.
+          </p>
+          {showCountdown && (
+            <div className="mt-1.5 h-1.5 w-full max-w-[220px] bg-amber-200 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-amber-500 transition-all duration-1000 ease-linear"
+                style={{ width: `${Math.max(0, Math.min(100, (1 - remaining! / 120) * 100))}%` }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function TrackingView({ session, orders, activeOrder, onOrderMore, onPay }: {
   session: DiningSession; orders: Order[]; activeOrder: Order | null;
   onOrderMore: () => void; onPay: () => void;
@@ -636,6 +729,9 @@ function TrackingView({ session, orders, activeOrder, onOrderMore, onPay }: {
           {/* Smart-dispatch status banner: shows which chef is preparing the
               order, or a TAT countdown while we wait for a chef to pick it up. */}
           <ChefDispatchStatus order={activeOrder} />
+          {/* Once ready, show the serving-side dispatch banner: which staff is
+              bringing it, or a TAT countdown while no server is available. */}
+          <StaffDispatchStatus order={activeOrder} />
 
           <ol className="space-y-4 mt-4">
             {STATUS_STEPS.map((s, idx) => {
@@ -670,6 +766,12 @@ function TrackingView({ session, orders, activeOrder, onOrderMore, onPay }: {
                 )}
                 {o.status === 'pending' && !o.chefName && (
                   <span className="block text-[11px] text-amber-600 mt-0.5">Finding a chef…</span>
+                )}
+                {o.staffName && (o.status === 'ready' || o.status === 'served') && (
+                  <span className="block text-[11px] text-sky-600 mt-0.5">Server: {o.staffName}</span>
+                )}
+                {o.status === 'ready' && !o.staffName && (
+                  <span className="block text-[11px] text-amber-600 mt-0.5">Finding a server…</span>
                 )}
               </div>
               <div className="flex items-center gap-2">
