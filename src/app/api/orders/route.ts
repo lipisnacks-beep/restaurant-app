@@ -49,7 +49,29 @@ export async function GET(req: NextRequest) {
       filter.status = { $in: ['pending', 'preparing'] };
     }
   } else if (role === 'staff') {
-    filter.status = { $in: ['ready', 'served'] };
+    // Resolve the calling staff so we can scope the queue to them, mirroring
+    // how the chef queue is scoped. There are three buckets a staff member
+    // sees:
+    //   1. ready orders NOT YET accepted by anyone -> ring for ALL staff so
+    //      the first available one can accept.
+    //   2. ready orders THIS staff accepted (staffId == me, still 'ready') ->
+    //      so they can serve the ones they claimed.
+    //   3. 'served' orders THIS staff delivered (staffId == me) -> awaiting
+    //      payment, shown in their "Awaiting Payment" column.
+    // Pending/preparing orders are NEVER shown to staff (that's the chef's
+    // kitchen). Served orders that another staff delivered are also hidden.
+    const session = await resolveSessionForRoles(req, ['admin', 'staff'], 'staff');
+    if (session && session.role === 'staff') {
+      const me = new Types.ObjectId(session.userId);
+      filter.$or = [
+        { status: 'ready', staffId: { $exists: false } },
+        { status: 'ready', staffId: me },
+        { status: 'served', staffId: me },
+      ];
+    } else {
+      // Admin (or unauthenticated caller) sees the full ready+served queue.
+      filter.status = { $in: ['ready', 'served'] };
+    }
   } else if (role === 'admin' && !sessionId) {
     // today's orders for the admin dashboard
     const start = new Date();

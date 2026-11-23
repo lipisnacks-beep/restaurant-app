@@ -40,13 +40,14 @@ export interface IOrder extends Document {
   customerName?: string;
   notes?: string;
   chefId?: Types.ObjectId;
-  staffId?: Types.ObjectId;   // staff who delivered
+  staffId?: Types.ObjectId;   // staff who accepted/delivered
   rating?: number;             // 1..5, set by customer
   createdAt: Date;
   updatedAt: Date;
   placedAt: Date;
   preparingAt?: Date;
   readyAt?: Date;
+  acceptedAt?: Date;           // when a staff accepted the ready order
   servedAt?: Date;
   completedAt?: Date;
   cancelledAt?: Date;
@@ -100,6 +101,7 @@ const OrderSchema = new Schema<IOrder>(
     placedAt: { type: Date, default: Date.now },
     preparingAt: { type: Date },
     readyAt: { type: Date },
+    acceptedAt: { type: Date },
     servedAt: { type: Date },
     completedAt: { type: Date },
     cancelledAt: { type: Date },

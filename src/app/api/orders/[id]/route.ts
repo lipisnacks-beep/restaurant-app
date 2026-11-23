@@ -71,6 +71,52 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       await order.save();
       return ok({ order });
     }
+    case 'accept': {
+      // Staff accepts (claims) a ready order so they are responsible for
+      // serving it. This is the staff-side mirror of the chef's
+      // 'start_preparing' action: without it, two staff members could both
+      // rush the same ready order. We use an ATOMIC update (findOneAndUpdate
+      // with a status guard) so that if two staff accept at the same instant,
+      // exactly one wins and the other gets a clear "already accepted" error.
+      const session = await resolveSessionForRoles(req, ['admin', 'staff'], 'staff');
+      if (!session) return unauthorized('Your session has expired — please sign in again');
+      if (!['admin', 'staff'].includes(session.role)) {
+        return forbidden(`Only staff or admin can accept an order (your role: ${session.role})`);
+      }
+      if (order.status !== 'ready') {
+        const claimed = order.status === 'served'
+          ? ' — another staff already served it'
+          : '';
+        return fail(`Order is ${order.status}${claimed}`, 422);
+      }
+
+      // If this staff already accepted it, treat as a no-op success (idempotent
+      // re-accept, e.g. they refreshed the tab). Atomically claim it for THIS
+      // staff only if nobody has claimed it yet.
+      if (order.staffId && String(order.staffId) === String(session.userId)) {
+        return ok({ order, alreadyMine: true });
+      }
+
+      // Atomic claim: only flip if status is still 'ready' AND no staff has
+      // claimed it yet. This is the race-safe guard.
+      const claimed = await Order.findOneAndUpdate(
+        { _id: order._id, status: 'ready', staffId: { $exists: false } },
+        {
+          $set: {
+            staffId: session.userId as any,
+            acceptedAt: new Date(),
+          },
+        },
+        { new: true },
+      );
+      if (!claimed) {
+        // Someone else beat us to it.
+        const fresh = await Order.findById(order._id);
+        const who = fresh?.staffId ? ' — another staff just accepted it' : '';
+        return fail(`Order is already ${fresh?.status || 'claimed'}${who}`, 422);
+      }
+      return ok({ order: claimed });
+    }
     case 'serve': {
       const session = await resolveSessionForRoles(req, ['admin', 'staff'], 'staff');
       if (!session) return unauthorized('Your session has expired — please sign in again');
@@ -78,6 +124,16 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         return forbidden(`Only staff or admin can serve an order (your role: ${session.role})`);
       }
       if (order.status !== 'ready') return fail(`Order is ${order.status}, not ready — cannot serve`, 422);
+      // If the order was already accepted by a DIFFERENT staff member, only
+      // that staff (or an admin) may serve it — prevents two staff from both
+      // delivering the same order.
+      if (
+        order.staffId &&
+        session.role === 'staff' &&
+        String(order.staffId) !== String(session.userId)
+      ) {
+        return fail('Another staff member has already accepted this order', 422);
+      }
       order.status = 'served';
       order.servedAt = new Date();
       if (session.role === 'staff') order.staffId = session.userId as any;

@@ -1,15 +1,20 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
-import { api } from '@/lib/apiClient';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { api, getTabUser, getTabToken, clearTabIdentity } from '@/lib/apiClient';
 import { toast } from 'sonner';
 import { timeAgo, formatCurrency } from '@/lib/utils';
-import { ConciergeBell, CheckCircle2, Loader2, LogOut, Bell, Coins, Table2 } from 'lucide-react';
+import {
+  ConciergeBell, CheckCircle2, Loader2, LogOut, Bell, BellRing, Coins, Table2,
+  Volume2, VolumeX, UserCog,
+} from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 interface OrderItem { name: string; quantity: number; price: number; note?: string }
 interface Order {
   _id: string; orderNumber: string; tableNumber: number;
   items: OrderItem[]; status: string; createdAt: string; readyAt?: string;
+  acceptedAt?: string;
   servedAt?: string; customerName?: string; tip?: number; total?: number; paymentStatus?: string;
 }
 interface OccupiedTable {
@@ -20,6 +25,11 @@ interface OccupiedTable {
   } | null;
 }
 
+const RINGTONE_URL = '/sounds/staff-order.wav';
+// Poll every 4s. The API carries Cache-Control: no-store and the client uses
+// cache: 'no-store', so every poll hits the DB and sees freshly ready orders.
+const POLL_MS = 4000;
+
 export default function StaffPortalClient() {
   const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
@@ -28,37 +38,154 @@ export default function StaffPortalClient() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
 
+  // --- Per-tab staff identity ---
+  // Each browser tab carries its own identity token (sessionStorage), so two
+  // staff logging in on the same browser keep separate identities — the same
+  // mechanism the chef portal uses. We surface the signed-in staff's name in
+  // the header so it's obvious which staff this tab belongs to. If a tab
+  // reaches the portal without a per-tab token, bounce to login to establish one.
+  const [staffName, setStaffName] = useState<string>('');
+
+  // --- Sound state ---
+  // Browsers block audio playback until the user interacts with the page. We
+  // show an "enable alerts" banner; the first tap runs audio.play() (resumes
+  // the AudioContext) and flips `soundEnabled`. After that the loud doorbell
+  // ringtone plays automatically whenever there are UNACCEPTED ready orders.
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [soundMuted, setSoundMuted] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Track previously-seen UNACCEPTED ready order ids so we ring the bell on
+  // genuinely NEW ready orders (not on every poll).
+  const seenUnacceptedRef = useRef<Set<string>>(new Set());
+  const [ringing, setRinging] = useState(false);
+
+  const loadRef = useRef<() => void>(() => {});
+
+  const playRingtone = useCallback(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    a.currentTime = 0;
+    a.volume = 1.0;
+    a.play().catch(() => {
+      setSoundEnabled(false);
+    });
+  }, []);
+
+  const stopRingtone = useCallback(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    a.pause();
+    a.currentTime = 0;
+  }, []);
+
+  // One-tap unlock: a real user gesture lets us call play() and unlock audio.
+  const enableAlerts = useCallback(async () => {
+    const a = audioRef.current;
+    if (a) {
+      a.volume = 1.0;
+      try {
+        await a.play();
+        setSoundEnabled(true);
+        a.pause(); // don't ring now, just unlock
+        a.currentTime = 0;
+      } catch { /* ignore */ }
+    }
+    toast.success('Order alerts enabled — you will hear new ready orders.');
+    loadRef.current();
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    setSoundMuted((m) => {
+      const next = !m;
+      if (next) stopRingtone();
+      return next;
+    });
+  }, [stopRingtone]);
+
+  // Establish per-tab identity on mount. If no per-tab token, the tab reached
+  // the portal directly (e.g. bookmark) — redirect to login so it gets its
+  // own identity instead of silently sharing whatever the browser cookie has.
+  useEffect(() => {
+    const token = getTabToken();
+    const user = getTabUser<{ name?: string; email?: string; role?: string }>();
+    if (!token || !user || user.role !== 'staff') {
+      router.replace('/staff/login');
+      return;
+    }
+    setStaffName(user.name || user.email || 'Staff');
+  }, [router]);
+
   const load = useCallback(async () => {
     const [ordersRes, tablesRes] = await Promise.all([
       api<{ orders: Order[] }>('/api/orders?role=staff&limit=50'),
       api<{ tables: OccupiedTable[] }>('/api/tables'),
     ]);
     if (ordersRes.ok && ordersRes.data) {
-      setOrders(ordersRes.data.orders);
-      const todayTips = ordersRes.data.orders
+      const next = ordersRes.data.orders;
+      setOrders(next);
+      const todayTips = next
         .filter((o) => o.tip && o.tip > 0)
         .reduce((s, o) => s + (o.tip || 0), 0);
       setTipsToday(todayTips);
+
+      // UNACCEPTED ready orders = ready AND no acceptedAt yet -> these ring
+      // for ALL staff until one accepts. Accepted-but-still-ready orders
+      // (already claimed by this staff) do NOT ring (the bell already served
+      // its purpose: alerting that something needs serving).
+      const unaccepted = next.filter((o) => o.status === 'ready' && !o.acceptedAt);
+      const unacceptedIds = new Set(unaccepted.map((o) => o._id));
+      const fresh = unaccepted.filter((o) => !seenUnacceptedRef.current.has(o._id));
+      seenUnacceptedRef.current = unacceptedIds;
+
+      // Ring (loud doorbell) while there are unaccepted ready orders.
+      if (unaccepted.length > 0) {
+        setRinging(true);
+        if ((soundEnabled || fresh.length > 0) && !soundMuted) playRingtone();
+      } else {
+        setRinging(false);
+        stopRingtone();
+      }
     }
     if (tablesRes.ok && tablesRes.data) {
-      // Tables that are occupied (have a currentSession).
       setTables(tablesRes.data.tables.filter((t) => t.currentSession?.sessionId));
     }
     setLoading(false);
-  }, []);
+  }, [soundEnabled, soundMuted, playRingtone, stopRingtone]);
+
+  useEffect(() => { loadRef.current = load; }, [load]);
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 8000);
-    return () => clearInterval(t);
-  }, [load]);
+    const t = setInterval(load, POLL_MS);
+    return () => { clearInterval(t); stopRingtone(); };
+  }, [load, stopRingtone]);
 
-  async function action(o: Order, action: 'serve' | 'complete') {
+  async function action(o: Order, act: 'accept' | 'serve' | 'complete') {
     setBusy(o._id);
-    const { error, ok } = await api(`/api/orders/${o._id}`, { method: 'PATCH', body: JSON.stringify({ action }) });
+    const { error, ok } = await api(`/api/orders/${o._id}`, {
+      method: 'PATCH', body: JSON.stringify({ action: act }),
+    });
     setBusy(null);
-    if (!ok) { toast.error(error || 'Failed'); return; }
-    toast.success(action === 'serve' ? 'Marked as served' : 'Order completed');
+    if (!ok) {
+      // The race message comes back as "...another staff just accepted it".
+      // Surface it as an info toast, not an error.
+      if (act === 'accept' && error && error.includes('another staff')) {
+        toast.info(error);
+      } else {
+        toast.error(error || 'Failed');
+      }
+      load();
+      return;
+    }
+    // Optimistic: accepting stops the bell immediately for this staff.
+    if (act === 'accept') {
+      stopRingtone();
+      setRinging(false);
+      toast.success('Order accepted — serve it when ready');
+    } else {
+      toast.success(act === 'serve' ? 'Marked as served' : 'Order completed');
+    }
     load();
   }
 
@@ -76,52 +203,124 @@ export default function StaffPortalClient() {
     load();
   }
 
-  const ready = orders.filter((o) => o.status === 'ready');
+  // Bucket the orders:
+  //  - toAccept: ready AND not yet accepted (ring for all staff).
+  //  - toServe:  ready AND accepted by THIS staff (claimed, awaiting serve).
+  //  - served:   served by THIS staff (awaiting payment).
+  const toAccept = orders.filter((o) => o.status === 'ready' && !o.acceptedAt);
+  const toServe = orders.filter((o) => o.status === 'ready' && o.acceptedAt);
   const served = orders.filter((o) => o.status === 'served');
-  // Tables ready to be freed (customer review done = sessionStatus 'completed').
   const tablesToFree = tables.filter((t) => t.currentSession?.sessionStatus === 'completed');
   const tablesOccupied = tables.filter((t) => t.currentSession?.sessionStatus !== 'completed');
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-emerald-50 to-gray-50">
+      {/* Hidden looping audio element (loud doorbell ringtone). */}
+      <audio ref={audioRef} src={RINGTONE_URL} loop preload="auto" />
+
       <header className="bg-gradient-to-r from-emerald-600 to-emerald-700 text-white sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ConciergeBell className="w-6 h-6" />
             <div>
               <h1 className="font-semibold leading-none">Staff Portal</h1>
-              <p className="text-xs text-emerald-100">Service &amp; delivery queue</p>
+              <p className="text-xs text-emerald-100">
+                {staffName ? `Signed in as ${staffName}` : 'Service & delivery queue'}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="badge bg-white/20 text-white">
-              <Bell className="w-3 h-3 mr-1" /> {ready.length} ready
+            <span className={`badge ${ringing ? 'bg-amber-400 text-amber-950 animate-pulse' : 'bg-white/20 text-white'}`}>
+              {ringing ? <BellRing className="w-3 h-3 mr-1" /> : <Bell className="w-3 h-3 mr-1" />}
+              {toAccept.length} new
             </span>
             <span className="badge bg-amber-400/30 text-amber-50">
               <Coins className="w-3 h-3 mr-1" /> {formatCurrency(tipsToday)} tips
             </span>
-            <button onClick={() => { api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'staff' }) }); router.push('/'); }} className="btn-ghost text-white hover:bg-white/10">
+            {soundEnabled && (
+              <button
+                onClick={toggleMute}
+                title={soundMuted ? 'Unmute alerts' : 'Mute alerts'}
+                className="btn-ghost text-white hover:bg-white/10 p-2"
+              >
+                {soundMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+              </button>
+            )}
+            <Link
+              href="/staff/account"
+              title="Account settings"
+              className="btn-ghost text-white hover:bg-white/10 p-2"
+            >
+              <UserCog className="w-4 h-4" />
+            </Link>
+            <button
+              onClick={() => {
+                clearTabIdentity();
+                api('/api/auth/logout', { method: 'POST', body: JSON.stringify({ scope: 'staff' }) });
+                router.push('/');
+              }}
+              className="btn-ghost text-white hover:bg-white/10"
+            >
               <LogOut className="w-4 h-4" />
             </button>
           </div>
         </div>
       </header>
 
+      {/* Enable-alerts banner (browsers block audio until a user gesture). */}
+      {!soundEnabled && (
+        <div className="bg-amber-50 border-b border-amber-200">
+          <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-between gap-3 flex-wrap">
+            <p className="text-sm text-amber-800 flex items-center gap-2">
+              <BellRing className="w-4 h-4" /> Enable order alerts to hear a loud bell when new orders are ready.
+            </p>
+            <button onClick={enableAlerts} className="btn bg-amber-500 text-white hover:bg-amber-600 text-sm">
+              <BellRing className="w-4 h-4" /> Enable alerts
+            </button>
+          </div>
+        </div>
+      )}
+
       <main className="max-w-7xl mx-auto px-4 py-6">
         {loading ? (
           <div className="text-gray-500 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
         ) : (
           <div className="space-y-8">
-            {/* Ready to serve */}
+            {/* New ready orders — accept to claim */}
             <section>
               <h2 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
-                <Bell className="w-4 h-4 text-teal-500" /> Ready to Serve ({ready.length})
+                <Bell className="w-4 h-4 text-emerald-500" /> New Orders — Accept to Serve ({toAccept.length})
               </h2>
+              <p className="text-xs text-gray-500 mb-3">
+                These orders are ready from the kitchen. Tap <strong>Accept</strong> to claim one — it then moves to your
+                “To Serve” list. The bell rings while there are unaccepted orders.
+              </p>
               <div className="grid gap-3 lg:grid-cols-2">
-                {ready.length === 0 && <p className="text-sm text-gray-400">None.</p>}
-                {ready.map((o) => (
+                {toAccept.length === 0 && <p className="text-sm text-gray-400">None.</p>}
+                {toAccept.map((o) => (
+                  <DeliveryCard key={o._id} order={o} accent="border-l-emerald-500">
+                    <button onClick={() => action(o, 'accept')} disabled={busy === o._id} className="btn bg-emerald-600 text-white hover:bg-emerald-700 w-full">
+                      {busy === o._id ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                      Accept Order
+                    </button>
+                  </DeliveryCard>
+                ))}
+              </div>
+            </section>
+
+            {/* Accepted by me — to serve */}
+            <section>
+              <h2 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                <ConciergeBell className="w-4 h-4 text-teal-500" /> To Serve ({toServe.length})
+              </h2>
+              <p className="text-xs text-gray-500 mb-3">
+                Orders you have accepted. Deliver them to the table, then tap <strong>Mark Served</strong>.
+              </p>
+              <div className="grid gap-3 lg:grid-cols-2">
+                {toServe.length === 0 && <p className="text-sm text-gray-400">None.</p>}
+                {toServe.map((o) => (
                   <DeliveryCard key={o._id} order={o} accent="border-l-teal-500">
-                    <button onClick={() => action(o, 'serve')} disabled={busy === o._id} className="btn bg-emerald-600 text-white hover:bg-emerald-700 w-full">
+                    <button onClick={() => action(o, 'serve')} disabled={busy === o._id} className="btn bg-teal-600 text-white hover:bg-teal-700 w-full">
                       {busy === o._id ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                       Mark Served
                     </button>
@@ -133,7 +332,7 @@ export default function StaffPortalClient() {
             {/* Awaiting payment */}
             <section>
               <h2 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
-                <ConciergeBell className="w-4 h-4 text-sky-500" /> Awaiting Payment ({served.length})
+                <Coins className="w-4 h-4 text-sky-500" /> Awaiting Payment ({served.length})
               </h2>
               <div className="grid gap-3 lg:grid-cols-2">
                 {served.length === 0 && <p className="text-sm text-gray-400">None.</p>}
@@ -192,7 +391,7 @@ export default function StaffPortalClient() {
               <div className="card p-12 text-center">
                 <CheckCircle2 className="w-12 h-12 mx-auto text-emerald-500 mb-3" />
                 <h2 className="text-lg font-semibold text-gray-800">Nothing to deliver</h2>
-                <p className="text-sm text-gray-500">Orders the chef marks ready will appear here automatically.</p>
+                <p className="text-sm text-gray-500">Orders the chef marks ready will appear here automatically — the bell will ring.</p>
               </div>
             )}
           </div>
