@@ -4,9 +4,11 @@ import { api, clearTabIdentity, setTabIdentity } from '@/lib/apiClient';
 import { toast } from 'sonner';
 import {
   ConciergeBell, ArrowLeft, Loader2, Mail, Phone, ShieldCheck, User as UserIcon,
-  KeyRound, CheckCircle2, Calendar, LogOut, Save,
+  KeyRound, CheckCircle2, Calendar, LogOut, Save, Coins, ChevronRight,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { formatCurrency } from '@/lib/utils';
 
 interface StaffProfile {
   id: string;
@@ -15,6 +17,9 @@ interface StaffProfile {
   phone: string;
   role: string;
   active: boolean;
+  tipsEarned?: number;
+  tipsWithdrawn?: number;
+  tipsAvailable?: number;
   createdAt: string;
 }
 
@@ -181,6 +186,27 @@ export default function StaffAccountClient() {
             Email and role are managed by an administrator. To change them, ask your manager.
           </p>
         </section>
+
+        {/* Tips balance quick-link -> full Tips page */}
+        <Link
+          href="/staff/tips"
+          className="card p-5 flex items-center justify-between gap-3 hover:shadow-md transition-shadow group"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center shrink-0">
+              <Coins className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <p className="font-semibold text-gray-800">My Tips</p>
+              <p className="text-xs text-gray-500">
+                {typeof profile.tipsAvailable === 'number'
+                  ? <>{formatCurrency(profile.tipsAvailable)} available to withdraw · {formatCurrency(profile.tipsEarned || 0)} earned</>
+                  : 'View & withdraw your tips by date'}
+              </p>
+            </div>
+          </div>
+          <ChevronRight className="w-5 h-5 text-gray-400 group-hover:text-emerald-600 shrink-0" />
+        </Link>
 
         {/* Editable profile fields */}
         <section className="card p-6">

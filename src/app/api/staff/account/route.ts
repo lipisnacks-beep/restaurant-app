@@ -23,6 +23,8 @@ export const dynamic = 'force-dynamic';
 
 /** Minimal public profile shape returned to the client. */
 function profile(u: any) {
+  const earned = Number(u.tipsEarned) || 0;
+  const withdrawn = Number(u.tipsWithdrawn) || 0;
   return {
     id: String(u._id),
     name: u.name,
@@ -30,7 +32,9 @@ function profile(u: any) {
     phone: u.phone || '',
     role: u.role,
     active: u.active,
-    tipsEarned: u.tipsEarned || 0,  // cumulative tips from orders this staff served
+    tipsEarned: earned,                       // cumulative tips from orders this staff served
+    tipsWithdrawn: withdrawn,                 // cumulative tips already withdrawn
+    tipsAvailable: Math.max(0, earned - withdrawn), // balance available to withdraw now
     createdAt: u.createdAt,
   };
 }

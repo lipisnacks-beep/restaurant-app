@@ -104,8 +104,12 @@ print(f"  · order1: {order1['orderNumber']} total={order1['total']}")
 print("\n=== 4. Chef prepares + marks order #1 ready ===")
 s,b = req(f"/api/orders/{order1['_id']}", "PATCH", {"action":"start_preparing"}, jar=chef)
 check(s==200 and b["order"]["status"]=="preparing", "order1 -> preparing")
+# Staff polls so their presence is fresh when mark_ready runs the dispatch.
+req("/api/orders?role=staff&limit=50", "GET", None, jar=staff)
 s,b = req(f"/api/orders/{order1['_id']}", "PATCH", {"action":"mark_ready"}, jar=chef)
 check(s==200 and b["order"]["status"]=="ready", "order1 -> ready")
+# Staff picks up the routed order then serves it.
+req("/api/orders?role=staff&limit=50", "GET", None, jar=staff)
 
 print("\n=== 5. Staff serves order #1 ===")
 s,b = req(f"/api/orders/{order1['_id']}", "PATCH", {"action":"serve"}, jar=staff)
@@ -123,7 +127,12 @@ print(f"  · order2: {order2['orderNumber']} total={order2['total']}")
 
 print("\n=== 7. Chef prepares + marks order #2 ready; staff serves ===")
 req(f"/api/orders/{order2['_id']}", "PATCH", {"action":"start_preparing"}, jar=chef)
+# Staff polls first so their presence is fresh when mark_ready runs the
+# staff dispatch sweep (routes the ready order to this staff).
+req("/api/orders?role=staff&limit=50", "GET", None, jar=staff)
 req(f"/api/orders/{order2['_id']}", "PATCH", {"action":"mark_ready"}, jar=chef)
+# Staff polls again to pick up the routed order, then serves it.
+req("/api/orders?role=staff&limit=50", "GET", None, jar=staff)
 s,b = req(f"/api/orders/{order2['_id']}", "PATCH", {"action":"serve"}, jar=staff)
 check(s==200 and b["order"]["status"]=="served", "order2 -> served")
 

@@ -13,6 +13,7 @@ export interface IUser extends Document {
   lastActiveAt?: Date | null;    // (chef/staff) last time they polled their portal — presence signal
   lastAssignedAt?: Date | null;  // (chef/staff) last time an order was routed to them — round-robin tiebreak
   tipsEarned?: number;           // (staff) cumulative tips from orders they served (paid orders)
+  tipsWithdrawn?: number;       // (staff) cumulative tips withdrawn to date (available balance = tipsEarned - tipsWithdrawn)
   createdAt: Date;
   updatedAt: Date;
   comparePassword(candidate: string): Promise<boolean>;
@@ -29,6 +30,7 @@ const UserSchema = new Schema<IUser>(
     lastActiveAt: { type: Date, default: null, index: true },
     lastAssignedAt: { type: Date, default: null, index: true },
     tipsEarned: { type: Number, default: 0, min: 0 },
+    tipsWithdrawn: { type: Number, default: 0, min: 0 },
   },
   { timestamps: true }
 );

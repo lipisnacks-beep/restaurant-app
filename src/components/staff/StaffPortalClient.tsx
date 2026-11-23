@@ -235,9 +235,13 @@ export default function StaffPortalClient() {
               {ringing ? <BellRing className="w-3 h-3 mr-1" /> : <Bell className="w-3 h-3 mr-1" />}
               {toAccept.length} new
             </span>
-            <span className="badge bg-amber-400/30 text-amber-50" title="Cumulative tips you have earned from orders you served">
+            <Link
+              href="/staff/tips"
+              title="View & withdraw your tips"
+              className="badge bg-amber-400/30 text-amber-50 hover:bg-amber-400/50 transition-colors"
+            >
               <Coins className="w-3 h-3 mr-1" /> {formatCurrency(tipsEarned)} tips
-            </span>
+            </Link>
             {soundEnabled && (
               <button
                 onClick={toggleMute}

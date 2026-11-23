@@ -95,8 +95,13 @@ s,b = req(f"/api/orders/{oid}", "PATCH", {"action":"start_preparing"})
 check(s==200 and b["order"]["status"]=="preparing", f"start_preparing ok (status {s}, role-resolved)")
 
 print("\n=== Chef marks ready (same jar) ===")
+# Staff polls first so their presence is fresh when mark_ready runs the staff
+# dispatch sweep — the order routes to THIS staff, who can then serve it.
+req("/api/orders?role=staff&limit=50", "GET", None, jar=both)
 s,b = req(f"/api/orders/{oid}", "PATCH", {"action":"mark_ready"})
 check(s==200 and b["order"]["status"]=="ready", f"mark_ready ok (status {s})")
+# Staff picks up the routed order.
+req("/api/orders?role=staff&limit=50", "GET", None, jar=both)
 
 print("\n=== THE KEY TEST: staff serves order from staff portal ===")
 print("  (previously returned 403 'Only staff or admin can serve (your role: chef)')")
@@ -135,6 +140,8 @@ s,b = creq2("/api/orders", "POST", {"tableNumber":2,"sessionId":sid2,"customerNa
     "items":[{"menuItem":menu["items"][0]["_id"],"quantity":1}]})
 check(s==201, f"order placed (status {s})")
 oid2 = b["order"]["_id"]
+# Refresh chef presence (poll touches it) so oid2 routes to THIS chef.
+req("/api/orders?role=chef&limit=50", "GET", None, jar=both)
 s,b = req(f"/api/orders/{oid2}", "PATCH", {"action":"start_preparing"})
 check(s==200, f"chef start_preparing still works from same jar (status {s})")
 # cleanup
