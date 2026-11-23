@@ -14,7 +14,7 @@ End-to-end test of the customer dining session flow:
  11. Admin: GET /api/sessions -> shows the session with occupied time
  12. Staff frees the table -> session closed, table.currentSession cleared
 """
-import json, urllib.request, urllib.error, http.cookiejar, time, sys
+import json, urllib.request, urllib.error, http.cookiejar, time, sys, subprocess
 
 BASE = "http://localhost:3123"
 customer = http.cookiejar.CookieJar()
@@ -58,10 +58,18 @@ print("  ✓ chef, staff, admin logged in (separate cookies)")
 # Free up table 1 if occupied from a prior run
 s,b = req("/api/tables", "GET", jar=admin)
 t1 = next(t for t in b["tables"] if t["number"]==1)
-if t1.get("currentSession",{}).get("sessionId"):
+if (t1.get("currentSession") or {}).get("sessionId"):
     print("  · table 1 occupied, freeing it first...")
     s,b2 = req(f"/api/tables/{t1['_id']}/free", "POST", jar=staff)
     print(f"    free status: {s}")
+
+# Clear stale chef presence so orders route ONLY to chef@restaurant.com (the
+# chef this test logs in as). Leftover dispatch chefs from prior runs could
+# otherwise grab the orders, and start_preparing would then 422 (ownership).
+subprocess.run(["npx","tsx","scripts/clear_chef_presence.ts"],
+  cwd="/home/z/my-project/download/restaurant-app", capture_output=True, text=True)
+# Re-login the chef so presence is marked fresh for chef@restaurant.com.
+login(chef, "chef@restaurant.com", "chef123", "chef")
 
 print("\n=== 1. Customer scans QR (no cookie) ===")
 s,b = req("/api/customer/register", "GET", jar=customer)
@@ -140,7 +148,7 @@ check(b.get("session",{}).get("endedAt") is not None, "endedAt set")
 print("\n=== 9b. Verify table shows sessionStatus=paid ===")
 s,b = req("/api/tables", "GET", jar=admin)
 t1 = next(t for t in b["tables"] if t["number"]==1)
-check(t1.get("currentSession",{}).get("sessionStatus")=="paid", f"table sessionStatus=paid (got {t1.get('currentSession',{}).get('sessionStatus')})")
+check((t1.get("currentSession") or {}).get("sessionStatus")=="paid", f"table sessionStatus=paid (got {(t1.get('currentSession') or {}).get('sessionStatus')})")
 
 print("\n=== 10. Submit review -> session completed, cookie cleared ===")
 s,b = req("/api/reviews", "POST", {

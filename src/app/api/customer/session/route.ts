@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import CustomerSession from '@/models/CustomerSession';
 import Order from '@/models/Order';
+import User from '@/models/User';
 import { resolveCustomerSessionId } from '@/lib/auth';
 import { ok, fail } from '@/lib/utils';
 
@@ -13,6 +14,11 @@ export const dynamic = 'force-dynamic';
  *   payable (served/ready + unpaid) and pending (still in the kitchen). The
  *   customer app uses this to render the aggregated bill before payment and to
  *   let the customer order more items mid-meal.
+ *
+ * Each order also carries the name of the chef the dispatch engine routed it
+ * to (chefName) so the customer can see "Chef X is preparing your order", and
+ * an estimatedChefAssignBy ETA shown as a TAT countdown while no chef has
+ * picked the order up yet.
  */
 export async function GET(req: NextRequest) {
   await dbConnect();
@@ -23,6 +29,7 @@ export async function GET(req: NextRequest) {
   if (!session) return fail('Session not found', 404);
 
   const orders = await Order.find({ sessionId: session.sessionId })
+    .populate('chefId', 'name')
     .sort({ createdAt: 1 })
     .lean();
 
@@ -67,6 +74,7 @@ export async function GET(req: NextRequest) {
 }
 
 function serializeOrder(o: any) {
+  const chef: any = o.chefId;
   return {
     _id: String(o._id),
     orderNumber: o.orderNumber,
@@ -83,6 +91,10 @@ function serializeOrder(o: any) {
     customerName: o.customerName || '',
     createdAt: o.createdAt,
     placedAt: o.placedAt,
+    assignedAt: o.assignedAt || null,
+    estimatedChefAssignBy: o.estimatedChefAssignBy || null,
+    chefId: chef ? String(chef._id) : null,
+    chefName: chef ? chef.name : null,
     servedAt: o.servedAt || null,
     completedAt: o.completedAt || null,
   };

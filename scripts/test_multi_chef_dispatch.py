@@ -21,7 +21,7 @@ Scenario (simulating two chefs on two devices, using two separate cookie jars):
 Also confirms the chef portal page serves the new audio element + enable-alerts
 banner by grepping the compiled JS bundle.
 """
-import json, urllib.request, urllib.error, http.cookiejar, sys
+import json, urllib.request, urllib.error, http.cookiejar, sys, subprocess
 
 BASE = "http://localhost:3123"
 PASS = 0; FAIL = 0
@@ -92,10 +92,19 @@ check(s==200, f"chef B login (status {s})")
 chefB_id = b.get("user",{}).get("id","")
 check(chefA_id != chefB_id, f"chef A and B are different users ({chefA_id[:8]} vs {chefB_id[:8]})")
 
+# Clear stale chef presence + assignment timestamps so the dispatch test starts
+# from a clean slate (chefs from prior runs may have a fresh lastActiveAt).
+subprocess.run(["npx","tsx","-e",
+  "import('/home/z/my-project/download/restaurant-app/src/lib/db.js').then(async m=>{await m.default();const U=(await import('/home/z/my-project/download/restaurant-app/src/models/User.js')).default;await U.updateMany({role:'chef'},{$set:{lastActiveAt:null,lastAssignedAt:null}});process.exit(0);})"],
+  cwd="/home/z/my-project/download/restaurant-app", capture_output=True, text=True)
+# Re-login both chefs so they are marked present again (login touches presence).
+req(chefA, "/api/auth/login", "POST", {"email":"chef@restaurant.com","password":"chef123","scope":"chef"})
+req(chefB, "/api/auth/login", "POST", {"email":"chef2@restaurant.com","password":"chef123","scope":"chef"})
+
 # Free any occupied tables
 s,b = req(admin, "/api/tables")
 for t in b["tables"]:
-    if t.get("currentSession",{}).get("sessionId"):
+    if (t.get("currentSession") or {}).get("sessionId"):
         req(admin, f"/api/tables/{t['_id']}/free", "POST")
 
 print("\n=== Customer places an order on table 1 ===")
@@ -109,37 +118,46 @@ check(s==201, f"order placed (status {s})")
 oid = b["order"]["_id"]
 orderNum = b["order"]["orderNumber"]
 
-print("\n=== Both chefs fetch /api/orders?role=chef — both should SEE the pending order ===")
+print("\n=== Both chefs fetch /api/orders?role=chef — order goes to ONE chef only ===")
+# Smart dispatch: the order is routed to exactly ONE chef (least-loaded,
+# round-robin tiebreak). Only that chef sees it pending; the other does not.
 s,bA = req(chefA, "/api/orders?role=chef")
 check(s==200, f"chef A fetch (status {s})")
 pendingA = [o for o in bA.get("orders",[]) if o["status"]=="pending"]
-check(any(o["_id"]==oid for o in pendingA), f"chef A sees pending order {orderNum}")
 
 s,bB = req(chefB, "/api/orders?role=chef")
 check(s==200, f"chef B fetch (status {s})")
 pendingB = [o for o in bB.get("orders",[]) if o["status"]=="pending"]
-check(any(o["_id"]==oid for o in pendingB), f"chef B sees pending order {orderNum}")
 
-print("\n=== Chef A accepts the order (start_preparing) ===")
-s,b = req(chefA, f"/api/orders/{oid}", "PATCH", {"action":"start_preparing"})
-check(s==200, f"chef A accept (status {s})")
+seesA = any(o["_id"]==oid for o in pendingA)
+seesB = any(o["_id"]==oid for o in pendingB)
+check(seesA or seesB, f"the order is visible to at least one chef ({orderNum})")
+# Exactly one chef was routed the order (NOT broadcast to both).
+check(seesA != seesB, f"order routed to ONE chef only (A={seesA}, B={seesB}) — no broadcast")
+# Determine which chef owns it for the subsequent steps.
+owner_is_A = seesA
+owner_chef = chefA if owner_is_A else chefB
+owner_id = chefA_id if owner_is_A else chefB_id
+other_chef = chefB if owner_is_A else chefA
+other_id = chefB_id if owner_is_A else chefA_id
+print(f"     -> order {orderNum} routed to chef {'A' if owner_is_A else 'B'}")
+
+print(f"\n=== The owner chef accepts the order (start_preparing) ===")
+s,b = req(owner_chef, f"/api/orders/{oid}", "PATCH", {"action":"start_preparing"})
+check(s==200, f"owner chef accept (status {s})")
 if s==200:
     check(b["order"]["status"]=="preparing", f"order status=preparing (got {b['order']['status']})")
-    check(str(b["order"].get("chefId",""))==chefA_id, f"chefId == chef A ({b['order'].get('chefId','')[:8]} == {chefA_id[:8]})")
+    check(str(b["order"].get("chefId",""))==owner_id, f"chefId == owner chef ({b['order'].get('chefId','')[:8]} == {owner_id[:8]})")
 
-print("\n=== Chef B fetches again — should NO LONGER see the order (scoped to chefId==A) ===")
-s,bB2 = req(chefB, "/api/orders?role=chef")
-check(s==200, f"chef B re-fetch (status {s})")
+print("\n=== The OTHER chef never saw this order (dispatch scoping works) ===")
+s,bB2 = req(other_chef, "/api/orders?role=chef")
+check(s==200, f"other chef re-fetch (status {s})")
 stillPendingB = [o for o in bB2.get("orders",[]) if o["status"]=="pending"]
 stillPreparingB = [o for o in bB2.get("orders",[]) if o["status"]=="preparing"]
-check(not any(o["_id"]==oid for o in stillPendingB), "chef B no longer sees it as pending")
-check(not any(o["_id"]==oid for o in stillPreparingB), "chef B does NOT see chef A's preparing order (scoping works)")
+check(not any(o["_id"]==oid for o in stillPendingB), "other chef never sees it as pending")
+check(not any(o["_id"]==oid for o in stillPreparingB), "other chef does NOT see the owner's preparing order")
 
 print("\n=== Cache-Control header: every /api/orders response must be no-store ===")
-# This is THE fix for the bug the user reported: without `Cache-Control:
-# no-store`, mobile browsers (Safari/Chrome) heuristically cache the GET
-# and Chef B keeps seeing Chef A's already-accepted order until the cache
-# entry expires. We assert the header is present and forbids caching.
 s,_,hdrs = req_full(chefB, "/api/orders?role=chef")
 cc = hdrs.get("cache-control","")
 check("no-store" in cc, f"GET /api/orders returns Cache-Control: no-store (got '{cc}')")
@@ -147,43 +165,40 @@ s,_,hdrs = req_full(chefA, "/api/orders?role=chef")
 cc = hdrs.get("cache-control","")
 check("no-store" in cc, f"chef A also gets no-store (got '{cc}')")
 
-print("\n=== Rapid re-poll: Chef B's NEXT poll (1s later) reflects Chef A's accept, no stale cache ===")
-# Place a SECOND order so chef B has something to see, then have chef A
-# accept it, and immediately poll as chef B — must NOT return the stale
-# pre-accept snapshot.
+print("\n=== Second order: dispatched to the OTHER chef (round-robin / least-loaded) ===")
+# With chef A's owner now at load 1 (preparing) and the other at load 0, the
+# next order should go to the other chef (least-loaded).
 s,b = req(cust, "/api/orders", "POST", {"tableNumber":1,"sessionId":sid,"customerName":"Chef Test",
     "items":[{"menuItem":menu["items"][1]["_id"] if len(menu["items"])>1 else menu["items"][0]["_id"],"quantity":1}]})
 check(s==201, f"second order placed (status {s})")
 oid2 = b["order"]["_id"]
-import time
-# Chef B sees it pending first (baseline).
-s,bB_pre = req(chefB, "/api/orders?role=chef")
-saw_before = any(o["_id"]==oid2 and o["status"]=="pending" for o in bB_pre.get("orders",[]))
-check(saw_before, "chef B sees order #2 as pending before accept")
-# Chef A accepts it.
-s,b = req(chefA, f"/api/orders/{oid2}", "PATCH", {"action":"start_preparing"})
-check(s==200, f"chef A accepts order #2 (status {s})")
-# Chef B polls immediately — must reflect the new state (not pending),
-# proving the response was NOT served from a stale cache.
-s,bB_post = req(chefB, "/api/orders?role=chef")
-saw_pending_after = any(o["_id"]==oid2 and o["status"]=="pending" for o in bB_post.get("orders",[]))
-check(not saw_pending_after, "chef B's immediate re-poll does NOT show order #2 as pending (cache busted)")
+# The other chef should see order #2 (routed to them).
+s,b_other = req(other_chef, "/api/orders?role=chef")
+sees_other = any(o["_id"]==oid2 and o["status"]=="pending" for o in b_other.get("orders",[]))
+check(sees_other, "the OTHER chef sees order #2 (routed to them via least-loaded)")
+# The owner chef should NOT see order #2 (it wasn't routed to them).
+s,b_owner = req(owner_chef, "/api/orders?role=chef")
+sees_owner_o2 = any(o["_id"]==oid2 for o in b_owner.get("orders",[]))
+check(not sees_owner_o2, "the first owner does NOT see order #2 (not routed to them)")
+# The other chef accepts order #2.
+s,b = req(other_chef, f"/api/orders/{oid2}", "PATCH", {"action":"start_preparing"})
+check(s==200, f"other chef accepts order #2 (status {s})")
 
-print("\n=== Chef B tries to accept the same order — should get the race message ===")
-s,b = req(chefB, f"/api/orders/{oid}", "PATCH", {"action":"start_preparing"})
-check(s==422, f"chef B accept blocked (status {s})")
+print("\n=== The OTHER chef tries to accept the FIRST order — blocked by ownership ===")
+s,b = req(other_chef, f"/api/orders/{oid}", "PATCH", {"action":"start_preparing"})
+check(s==422, f"non-owner chef accept blocked (status {s})")
 if s==422:
     err = b.get("error","")
-    check("another chef" in err, f"race message mentions 'another chef' (got: '{err}')")
+    check("routed to another chef" in err or "another chef" in err, f"ownership message (got: '{err}')")
 
-print("\n=== Chef A still sees the order in their 'preparing' queue ===")
-s,bA2 = req(chefA, "/api/orders?role=chef")
+print("\n=== The owner chef still sees the order in their 'preparing' queue ===")
+s,bA2 = req(owner_chef, "/api/orders?role=chef")
 prepA = [o for o in bA2.get("orders",[]) if o["status"]=="preparing"]
-check(any(o["_id"]==oid for o in prepA), "chef A sees their own preparing order")
+check(any(o["_id"]==oid for o in prepA), "owner chef sees their own preparing order")
 
-print("\n=== Chef A marks it ready ===")
-s,b = req(chefA, f"/api/orders/{oid}", "PATCH", {"action":"mark_ready"})
-check(s==200 and b["order"]["status"]=="ready", f"chef A mark_ready (status {s}, status={b.get('order',{}).get('status')})")
+print("\n=== The owner chef marks it ready ===")
+s,b = req(owner_chef, f"/api/orders/{oid}", "PATCH", {"action":"mark_ready"})
+check(s==200 and b["order"]["status"]=="ready", f"owner chef mark_ready (status {s}, status={b.get('order',{}).get('status')})")
 
 print("\n=== Ringtone audio file is served ===")
 # Use a fresh jar (no auth needed for static file)

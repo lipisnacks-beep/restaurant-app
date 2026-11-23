@@ -22,6 +22,11 @@ interface Order {
   subtotal: number; taxAmount: number; serviceChargeAmount: number; tip: number;
   total: number; status: string; paymentMethod?: string; paymentStatus: string;
   customerName?: string; createdAt: string; servedAt?: string | null; completedAt?: string | null;
+  // Smart-dispatch fields shown to the customer while the order is in the kitchen.
+  assignedAt?: string | null;
+  estimatedChefAssignBy?: string | null;
+  chefId?: string | null;
+  chefName?: string | null;
 }
 interface CustomerInfo { _id: string; name: string; mobile: string }
 interface DiningSession {
@@ -509,6 +514,98 @@ const STATUS_STEPS = [
 ];
 const STATUS_ORDER = ['pending', 'preparing', 'ready', 'served', 'completed'];
 
+/**
+ * Smart-dispatch status banner shown on the customer's tracking view.
+ *
+ * - If a chef has been routed the order and started preparing it, we show
+ *   "Chef <name> is preparing your order" so the customer knows exactly who
+ *   is handling it.
+ * - If the order is pending and a chef has been ASSIGNED (routed) but hasn't
+ *   tapped "accept" yet, we show "Chef <name> has your order" — the chef has
+ *   it, they just haven't started cooking.
+ * - If the order is pending and NO chef is available, we show a TAT
+ *   countdown ("A chef will pick this up shortly — in Ns") driven by the
+ *   estimatedChefAssignBy ETA the dispatch engine stamped. The countdown
+ *   gives the customer a concrete expectation instead of an indefinite spin.
+ */
+function ChefDispatchStatus({ order }: { order: Order }) {
+  const [remaining, setRemaining] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!order.estimatedChefAssignBy) { setRemaining(null); return; }
+    const compute = () => Math.max(0, Math.round((new Date(order.estimatedChefAssignBy!).getTime() - Date.now()) / 1000));
+    setRemaining(compute());
+    const t = setInterval(() => {
+      const r = compute();
+      setRemaining(r);
+      if (r <= 0) clearInterval(t);
+    }, 1000);
+    return () => clearInterval(t);
+  }, [order.estimatedChefAssignBy]);
+
+  // Preparing: a chef has accepted and is cooking.
+  if (order.status === 'preparing' && order.chefName) {
+    return (
+      <div className="flex items-center gap-3 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2.5">
+        <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
+          <ChefHat className="w-5 h-5" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-emerald-800">Chef {order.chefName} is preparing your order</p>
+          <p className="text-xs text-emerald-600">Your food is being cooked right now.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Pending but a chef has been routed (assigned): they have it, will start soon.
+  if (order.status === 'pending' && order.chefName) {
+    return (
+      <div className="flex items-center gap-3 rounded-lg bg-sky-50 border border-sky-200 px-3 py-2.5">
+        <div className="w-9 h-9 rounded-full bg-sky-500 text-white flex items-center justify-center shrink-0">
+          <ChefHat className="w-5 h-5" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-sky-800">Chef {order.chefName} has your order</p>
+          <p className="text-xs text-sky-600">They will start cooking it very shortly.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Pending and no chef available: show the TAT countdown.
+  if (order.status === 'pending' && !order.chefName) {
+    const showCountdown = remaining !== null && remaining > 0;
+    return (
+      <div className="flex items-center gap-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
+        <div className="w-9 h-9 rounded-full bg-amber-500 text-white flex items-center justify-center shrink-0">
+          <Clock className="w-5 h-5 animate-pulse" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-amber-800">
+            {showCountdown
+              ? <>A chef will pick this up in {remaining}s</>
+              : 'Finding an available chef for you…'}
+          </p>
+          <p className="text-xs text-amber-600">
+            Your order will be processed very shortly — please hold on.
+          </p>
+          {showCountdown && (
+            <div className="mt-1.5 h-1.5 w-full max-w-[220px] bg-amber-200 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-amber-500 transition-all duration-1000 ease-linear"
+                style={{ width: `${Math.max(0, Math.min(100, (1 - remaining! / 120) * 100))}%` }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function TrackingView({ session, orders, activeOrder, onOrderMore, onPay }: {
   session: DiningSession; orders: Order[]; activeOrder: Order | null;
   onOrderMore: () => void; onPay: () => void;
@@ -535,7 +632,12 @@ function TrackingView({ session, orders, activeOrder, onOrderMore, onPay }: {
         <div className="card p-5">
           <p className="text-xs text-gray-500 mb-2">Latest order</p>
           <p className="text-xl font-bold text-brand-700 mb-3">{activeOrder.orderNumber}</p>
-          <ol className="space-y-4">
+
+          {/* Smart-dispatch status banner: shows which chef is preparing the
+              order, or a TAT countdown while we wait for a chef to pick it up. */}
+          <ChefDispatchStatus order={activeOrder} />
+
+          <ol className="space-y-4 mt-4">
             {STATUS_STEPS.map((s, idx) => {
               const done = idx <= STATUS_ORDER.indexOf(activeOrder.status);
               const Icon = s.icon;
@@ -563,6 +665,12 @@ function TrackingView({ session, orders, activeOrder, onOrderMore, onPay }: {
               <div>
                 <span className="font-medium text-gray-800">{o.orderNumber}</span>
                 <span className="text-xs text-gray-400 ml-2">{o.items.reduce((s, i) => s + i.quantity, 0)} items</span>
+                {o.chefName && (o.status === 'preparing' || o.status === 'pending') && (
+                  <span className="block text-[11px] text-emerald-600 mt-0.5">Chef {o.chefName}</span>
+                )}
+                {o.status === 'pending' && !o.chefName && (
+                  <span className="block text-[11px] text-amber-600 mt-0.5">Finding a chef…</span>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-gray-700">{formatCurrency(o.total)}</span>

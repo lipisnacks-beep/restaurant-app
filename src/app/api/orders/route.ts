@@ -6,16 +6,21 @@ import Table from '@/models/Table';
 import CustomerSession from '@/models/CustomerSession';
 import { resolveCustomerSessionId, resolveSessionForRoles } from '@/lib/auth';
 import { ok, fail, generateOrderNumber } from '@/lib/utils';
+import { assignPendingOrdersToChefs, touchChefPresence } from '@/lib/chefDispatch';
 import { Types } from 'mongoose';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * GET /api/orders?status=preparing&role=chef
- *  - chef  : NEW (pending) orders ring for ALL signed-in chefs so the first
- *            available one can accept. Preparing orders are scoped to the
- *            chef who accepted them (chefId == me) so each chef only sees
- *            their own active jobs.
+ *  - chef  : the dispatch engine routes each NEW order to ONE available chef
+ *            (least-loaded, round-robin tiebreak) — NOT broadcast to all.
+ *            A chef therefore sees ONLY the orders routed to them: pending
+ *            orders with chefId==me (to accept & start cooking) plus their
+ *            own preparing orders. Polling also touches the chef's presence
+ *            heartbeat and triggers a dispatch sweep so any order that
+ *            arrived while no chef was present gets routed now that this
+ *            chef is online.
  *  - staff : default returns { ready, served }
  *  - admin : all today's orders
  *  - customer?sessionId=... : only that session's orders
@@ -35,14 +40,21 @@ export async function GET(req: NextRequest) {
   if (status) {
     filter.status = status.split(',').filter(Boolean);
   } else if (role === 'chef') {
-    // Resolve the calling chef so we can scope their 'preparing' orders.
-    // Pending (unclaimed) orders ring for every chef; preparing orders are
-    // scoped to the chef who accepted them (chefId == me).
+    // Resolve the calling chef, touch their presence heartbeat, and run a
+    // dispatch sweep. The sweep routes any unassigned pending orders to an
+    // available chef (possibly this one) — so when a chef opens their portal
+    // they immediately pick up orders that were waiting for someone to come
+    // online. This chef then sees ONLY orders routed to them:
+    //   - pending + chefId==me  (assigned to me, awaiting my "accept & cook")
+    //   - preparing + chefId==me (I'm already cooking these)
     const session = await resolveSessionForRoles(req, ['admin', 'chef'], 'chef');
     if (session && session.role === 'chef') {
+      await touchChefPresence(session.userId);
+      await assignPendingOrdersToChefs();
+      const me = new Types.ObjectId(session.userId);
       filter.$or = [
-        { status: 'pending' },
-        { status: 'preparing', chefId: new Types.ObjectId(session.userId) },
+        { status: 'pending', chefId: me },
+        { status: 'preparing', chefId: me },
       ];
     } else {
       // Admin (or unauthenticated caller) sees both queues.
@@ -191,5 +203,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  return ok({ order }, { status: 201 });
+  // Smart dispatch: route this order to ONE available chef immediately (not
+  // broadcast to all). If no chef is currently available, the dispatch engine
+  // stamps an estimatedChefAssignBy ETA so the customer sees a TAT countdown
+  // instead of a bare "pending". We re-fetch the order after the sweep so the
+  // response the customer gets already reflects whether a chef has it.
+  await assignPendingOrdersToChefs();
+  const routed = await Order.findById(order._id).lean();
+
+  return ok({ order: routed || order }, { status: 201 });
 }

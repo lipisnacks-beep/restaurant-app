@@ -48,6 +48,8 @@ export interface IOrder extends Document {
   preparingAt?: Date;
   readyAt?: Date;
   acceptedAt?: Date;           // when a staff accepted the ready order
+  assignedAt?: Date;           // when the dispatch engine routed this order to a chef
+  estimatedChefAssignBy?: Date; // ETA shown to the customer while no chef is available
   servedAt?: Date;
   completedAt?: Date;
   cancelledAt?: Date;
@@ -102,6 +104,8 @@ const OrderSchema = new Schema<IOrder>(
     preparingAt: { type: Date },
     readyAt: { type: Date },
     acceptedAt: { type: Date },
+    assignedAt: { type: Date, index: true },
+    estimatedChefAssignBy: { type: Date },
     servedAt: { type: Date },
     completedAt: { type: Date },
     cancelledAt: { type: Date },

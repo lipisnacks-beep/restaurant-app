@@ -10,6 +10,8 @@ export interface IUser extends Document {
   role: Role;
   phone?: string;
   active: boolean;
+  lastActiveAt?: Date | null;    // (chefs) last time the chef polled the queue — presence signal
+  lastAssignedAt?: Date | null;  // (chefs) last time an order was routed to them — round-robin tiebreak
   createdAt: Date;
   updatedAt: Date;
   comparePassword(candidate: string): Promise<boolean>;
@@ -23,6 +25,8 @@ const UserSchema = new Schema<IUser>(
     role: { type: String, enum: ['admin', 'chef', 'staff'], required: true },
     phone: { type: String, default: '' },
     active: { type: Boolean, default: true },
+    lastActiveAt: { type: Date, default: null, index: true },
+    lastAssignedAt: { type: Date, default: null, index: true },
   },
   { timestamps: true }
 );

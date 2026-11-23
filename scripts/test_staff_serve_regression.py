@@ -17,7 +17,7 @@ This test signs in as both chef and staff on the SAME cookie jar (simulating one
 browser), places an order, prepares it as chef, then serves it as staff — and
 verifies the serve succeeds (previously returned 403 'your role: chef').
 """
-import json, urllib.request, urllib.error, http.cookiejar, sys
+import json, urllib.request, urllib.error, http.cookiejar, sys, subprocess
 
 BASE = "http://localhost:3133"
 # ONE cookie jar simulating ONE browser signed in as chef + staff + admin
@@ -45,6 +45,11 @@ def check(cond, msg):
     else: FAIL+=1; print(f"  ✗ {msg}")
 
 print("\n=== Sign in as chef, staff AND admin on the SAME browser ===")
+# Clear stale chef presence so orders route ONLY to chef@restaurant.com (the
+# chef this test logs in as). Leftover dispatch chefs from prior runs could
+# otherwise grab the orders, and start_preparing would then 422 (ownership).
+subprocess.run(["npx","tsx","scripts/clear_chef_presence.ts"],
+  cwd="/home/z/my-project/download/restaurant-app", capture_output=True, text=True)
 s,b = req("/api/auth/login", "POST", {"email":"chef@restaurant.com","password":"chef123","scope":"chef"})
 check(s==200, f"chef login (status {s})")
 s,b = req("/api/auth/login", "POST", {"email":"staff@restaurant.com","password":"staff123","scope":"staff"})
@@ -73,7 +78,7 @@ def creq(p, m="GET", body=None):
 # Free table 1 first if occupied
 s,b = req("/api/tables")
 for t in b["tables"]:
-    if t.get("currentSession",{}).get("sessionId"):
+    if (t.get("currentSession") or {}).get("sessionId"):
         req(f"/api/tables/{t['_id']}/free", "POST")
 
 s,b = creq("/api/customer/register", "POST", {"name":"Reg Test","mobile":"9777777777","tableNumber":1})
@@ -135,7 +140,7 @@ check(s==200, f"chef start_preparing still works from same jar (status {s})")
 # cleanup
 s,b = req("/api/tables")
 for t in b["tables"]:
-    if t.get("currentSession",{}).get("sessionId"):
+    if (t.get("currentSession") or {}).get("sessionId"):
         req(f"/api/tables/{t['_id']}/free", "POST")
 
 print(f"\n{'='*60}")

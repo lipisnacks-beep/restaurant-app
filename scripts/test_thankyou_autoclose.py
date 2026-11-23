@@ -16,7 +16,7 @@ ThankYouView relies on:
 Also fetches the compiled customer page HTML to confirm the ThankYouView
 component compiled in (sanity check that the build picked up the new code).
 """
-import json, urllib.request, urllib.error, http.cookiejar, sys
+import json, urllib.request, urllib.error, http.cookiejar, sys, subprocess
 
 BASE = "http://localhost:3123"
 PASS = 0; FAIL = 0
@@ -58,8 +58,13 @@ def creq(p, m="GET", body=None):
 print("\n=== Setup: free any occupied tables, sign in chef+staff ===")
 s,b = sreq("/api/tables")
 for t in b["tables"]:
-    if t.get("currentSession",{}).get("sessionId"):
+    if (t.get("currentSession") or {}).get("sessionId"):
         sreq(f"/api/tables/{t['_id']}/free", "POST")
+# Clear stale chef presence so orders route ONLY to chef@restaurant.com (the
+# chef this test logs in as). Leftover dispatch chefs from prior runs could
+# otherwise grab the orders, and start_preparing would then 422 (ownership).
+subprocess.run(["npx","tsx","scripts/clear_chef_presence.ts"],
+  cwd="/home/z/my-project/download/restaurant-app", capture_output=True, text=True)
 sreq("/api/auth/login", "POST", {"email":"chef@restaurant.com","password":"chef123","scope":"chef"})
 sreq("/api/auth/login", "POST", {"email":"staff@restaurant.com","password":"staff123","scope":"staff"})
 

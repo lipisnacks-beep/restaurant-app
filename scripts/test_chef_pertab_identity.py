@@ -93,6 +93,11 @@ if chef_b:
     check(s==200, f"reset second chef password/name (status {s})")
 
 print("\n=== Tab A: Chef A logs in (shared cookie jar) ===")
+# Clear stale chef presence so orders route ONLY to chef A or B (the chefs
+# this test logs in as). Leftover dispatch chefs from prior runs could
+# otherwise grab the orders, and start_preparing would then 422 (ownership).
+subprocess.run(["npx","tsx","scripts/clear_chef_presence.ts"],
+  cwd="/home/z/my-project/download/restaurant-app", capture_output=True, text=True)
 s,b = req(browser, "/api/auth/login", "POST", {"email":CHEF_A_EMAIL,"password":CHEF_A_PW,"scope":"chef"})
 check(s==200, f"Chef A login (status {s})")
 check("token" in b, "login response includes per-tab token")

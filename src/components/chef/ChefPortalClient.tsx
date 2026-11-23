@@ -14,6 +14,7 @@ interface OrderItem { name: string; quantity: number; note?: string; price: numb
 interface Order {
   _id: string; orderNumber: string; tableNumber: number;
   items: OrderItem[]; status: string; createdAt: string; customerName?: string; notes?: string;
+  assignedAt?: string | null;  // when the dispatch engine routed this order to THIS chef
 }
 
 const RINGTONE_URL = '/sounds/new-order.wav';
@@ -286,17 +287,20 @@ export default function ChefPortalClient() {
           <div className="card p-12 text-center">
             <CheckCircle2 className="w-12 h-12 mx-auto text-emerald-500 mb-3" />
             <h2 className="text-lg font-semibold text-gray-800">All caught up!</h2>
-            <p className="text-sm text-gray-500">No active orders right now. New orders will ring here automatically.</p>
+            <p className="text-sm text-gray-500">No orders routed to you right now. New orders assigned to you will ring here automatically.</p>
           </div>
         ) : (
           <div className="grid gap-6 lg:grid-cols-2">
             <section>
-              <h2 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
-                <Clock className="w-4 h-4 text-orange-500" /> New Orders ({pending.length})
+              <h2 className="font-semibold text-gray-800 mb-1 flex items-center gap-2">
+                <Clock className="w-4 h-4 text-orange-500" /> Routed to You ({pending.length})
                 {pending.length > 0 && soundEnabled && !soundMuted && (
                   <span className="text-xs text-amber-600 animate-pulse">🔔 ringing</span>
                 )}
               </h2>
+              <p className="text-xs text-gray-500 mb-3">
+                These orders were dispatched specifically to you. Accept to start cooking.
+              </p>
               <div className="space-y-3">
                 {pending.length === 0 && <p className="text-sm text-gray-400">None.</p>}
                 {pending.map((o) => (

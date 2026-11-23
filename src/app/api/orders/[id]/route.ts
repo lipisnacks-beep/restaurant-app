@@ -5,6 +5,7 @@ import Table from '@/models/Table';
 import CustomerSession from '@/models/CustomerSession';
 import { resolveSessionForRoles, resolveCustomerSessionId } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden } from '@/lib/utils';
+import { assignPendingOrdersToChefs } from '@/lib/chefDispatch';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,6 +54,19 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
           : '';
         return fail(`Order is already ${order.status}${claimed}`, 422);
       }
+      // Ownership: the dispatch engine routed this order to a SPECIFIC chef.
+      // Only that chef (or an admin) may accept & start cooking it — this is
+      // what stops two chefs from grabbing the same order and keeps the
+      // customer's "your chef is X" assignment accurate. An order with no
+      // chefId (no chef was available when it was placed) can be accepted by
+      // any chef as a fallback so it never gets stuck.
+      if (
+        order.chefId &&
+        session.role === 'chef' &&
+        String(order.chefId) !== String(session.userId)
+      ) {
+        return fail('This order was routed to another chef', 422);
+      }
       order.status = 'preparing';
       order.preparingAt = new Date();
       if (session.role === 'chef') order.chefId = session.userId as any;
@@ -69,6 +83,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       order.status = 'ready';
       order.readyAt = new Date();
       await order.save();
+      // This chef just freed up a slot — route any waiting orders to an
+      // available chef (possibly this one) so the backlog clears promptly.
+      await assignPendingOrdersToChefs();
       return ok({ order });
     }
     case 'accept': {
