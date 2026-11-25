@@ -6,10 +6,11 @@ import { timeAgo } from '@/lib/utils';
 import { useBrand } from '@/components/ui/Brand';
 import {
   ChefHat, Flame, CheckCircle2, Loader2, Clock, LogOut, Bell,
-  BellRing, Volume2, VolumeX, UserCog,
+  BellRing, Volume2, VolumeX, UserCog, Coins,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { formatCurrency } from '@/lib/utils';
 
 interface OrderItem { name: string; quantity: number; note?: string; price: number }
 interface Order {
@@ -39,6 +40,7 @@ export default function ChefPortalClient() {
   // per-tab token (e.g. opened the URL directly), bounce to login to
   // establish one — the shared cookie alone is NOT enough identity.
   const [chefName, setChefName] = useState<string>('');
+  const [tipsAvailable, setTipsAvailable] = useState(0);  // withdrawable tips balance (50/50 split on cooked orders)
 
   useEffect(() => {
     const token = getTabToken();
@@ -48,6 +50,10 @@ export default function ChefPortalClient() {
       return;
     }
     setChefName(user.name || user.email || 'Chef');
+    // Load the chef's withdrawable tips balance for the header badge.
+    api<{ user?: { tipsAvailable?: number } }>('/api/chef/account').then(({ data }) => {
+      if (data?.user?.tipsAvailable != null) setTipsAvailable(data.user.tipsAvailable);
+    });
   }, [router]);
 
   // --- Sound state ---
@@ -239,6 +245,13 @@ export default function ChefPortalClient() {
               {ringing ? <BellRing className="w-3 h-3 mr-1" /> : <Bell className="w-3 h-3 mr-1" />}
               {pending.length} new
             </span>
+            <Link
+              href="/chef/tips"
+              title="View & withdraw your tips"
+              className="badge bg-amber-400/30 text-amber-50 hover:bg-amber-400/50 transition-colors"
+            >
+              <Coins className="w-3 h-3 mr-1" /> {formatCurrency(tipsAvailable)} tips
+            </Link>
             {soundEnabled && (
               <button
                 onClick={toggleMute}

@@ -70,7 +70,19 @@ export async function GET(req: NextRequest) {
       $group: {
         _id: { $dateToString: { format: '%Y-%m-%d', date: '$completedAt', timezone: 'Asia/Dhaka' } },
         orders: { $sum: 1 },
-        tips: { $sum: '$tip' },
+        // staff earns the full tip when no chef was assigned, half when a
+        // chef was also assigned (the 50/50 tip split). This keeps the daily
+        // ledger in sync with User.tipsEarned, which is credited the same way
+        // in the pay action.
+        tips: {
+          $sum: {
+            $cond: [
+              { $and: [{ $ifNull: ['$chefId', null] }, { $ne: ['$chefId', null] }] },
+              { $divide: ['$tip', 2] },
+              '$tip',
+            ],
+          },
+        },
       },
     },
     { $sort: { _id: 1 } }, // oldest date first

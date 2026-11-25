@@ -75,8 +75,13 @@ export async function GET(req: NextRequest) {
   const settings = await getSettings();
   const currency = settings.currencySymbol || '₹';
 
-  // Paid orders within the range. "revenue" = money actually collected =
-  // subtotal + tax + serviceCharge + tip. "grossSales" = subtotal (food value).
+  // Paid orders within the range. "revenue" = money actually collected by the
+  // restaurant = subtotal + tax + serviceCharge. Tips are NOT restaurant income
+  // — they are a passthrough to the staff and chef who served the order — so
+  // they are excluded from revenue (and therefore from profit) and reported
+  // separately as `tips`. "grossSales" = subtotal (food value).
+  // NOTE: Order.total DOES include the tip (it is what the customer paid at the
+  // counter), so we must NOT sum '$total' here or tips would inflate revenue.
   const orderMatch = {
     createdAt: { $gte: from, $lte: to },
     paymentStatus: 'paid',
@@ -87,6 +92,9 @@ export async function GET(req: NextRequest) {
     ? { $dateToString: { format: '%Y-%m', date: '$createdAt' } }
     : { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } };
 
+  // Restaurant revenue (excludes tips): subtotal + tax + serviceCharge.
+  const revenueExpr = { $add: ['$subtotal', '$taxAmount', '$serviceChargeAmount'] };
+
   const [orderKpis, expenseKpis, purchaseKpis, orderSeries, expenseSeries, purchaseSeries,
     expenseByCat, purchaseByCat, revByPayment, topItemsAgg] = await Promise.all([
     Order.aggregate([
@@ -95,7 +103,7 @@ export async function GET(req: NextRequest) {
         _id: null,
         orders: { $sum: 1 },
         grossSales: { $sum: '$subtotal' },
-        revenue: { $sum: '$total' },
+        revenue: { $sum: revenueExpr },
         tax: { $sum: '$taxAmount' },
         serviceCharge: { $sum: '$serviceChargeAmount' },
         tips: { $sum: '$tip' },
@@ -114,7 +122,7 @@ export async function GET(req: NextRequest) {
       { $group: {
         _id: dateBucket,
         sales: { $sum: '$subtotal' },
-        revenue: { $sum: '$total' },
+        revenue: { $sum: revenueExpr },
         tips: { $sum: '$tip' },
         orders: { $sum: 1 },
       } },
@@ -142,7 +150,7 @@ export async function GET(req: NextRequest) {
     ]),
     Order.aggregate([
       { $match: orderMatch },
-      { $group: { _id: '$paymentMethod', revenue: { $sum: '$total' }, count: { $sum: 1 } } },
+      { $group: { _id: '$paymentMethod', revenue: { $sum: revenueExpr }, count: { $sum: 1 } } },
       { $sort: { revenue: -1 } },
     ]),
     Order.aggregate([

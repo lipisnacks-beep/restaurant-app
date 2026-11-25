@@ -181,6 +181,24 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       order.servedAt = new Date();
       if (session.role === 'staff') order.staffId = session.userId as any;
       await order.save();
+      // Record WHO served this table's customers. The first staff to serve an
+      // order for this dining session becomes the table's "serving staff" —
+      // only they (or an admin) may later mark the table ready-to-free after
+      // the customer pays. This ties the free-table action to the staff who
+      // actually handed the food to the customer.
+      if (order.table && session.role === 'staff') {
+        await Table.updateOne(
+          { _id: order.table, 'currentSession.sessionId': { $exists: true, $ne: '' } },
+          { $set: { 'currentSession.servedByStaffId': session.userId } },
+        );
+      } else if (order.table && session.role === 'admin' && order.staffId) {
+        // Admin serving on behalf of a routed staff: attribute the table to
+        // that staff so they can still free it.
+        await Table.updateOne(
+          { _id: order.table, 'currentSession.sessionId': { $exists: true, $ne: '' } },
+          { $set: { 'currentSession.servedByStaffId': order.staffId } },
+        );
+      }
       // This staff just freed up a serving slot — route any waiting ready
       // orders to an available staff (possibly this one).
       await assignReadyOrdersToStaff();
@@ -249,18 +267,60 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       order.total = order.subtotal + order.taxAmount + order.serviceChargeAmount + tipAmount;
       await order.save();
 
-      // Allocate the tip to the staff who served the anchor order. The
-      // dispatch engine routed this ready order to a specific staff member;
-      // when the customer tips, that tip belongs to the staff who physically
-      // brought the food to the table (order.staffId). We credit their
-      // cumulative tipsEarned so it persists across sessions and shows in
-      // their portal total. (Admin with no assigned staff: tip is not
-      // credited to anyone — there's no staff who served it.)
-      if (tipAmount > 0 && order.staffId) {
-        await User.updateOne(
-          { _id: order.staffId },
-          { $inc: { tipsEarned: tipAmount } },
-        ).exec();
+      // Allocate the tip to the chef + staff who served this order. The tip
+      // belongs to the people who actually made and delivered the food — it is
+      // NOT restaurant income — so it is split equally between the chef
+      // (order.chefId, who cooked it) and the staff (order.staffId, who served
+      // it). Each gets half, credited to their cumulative User.tipsEarned so it
+      // persists across sessions and shows in their portal total.
+      //
+      // Splitting rules:
+      //   - both chef + staff assigned  -> 50/50 split
+      //   - only one assigned           -> that person gets the full tip
+      //   - neither assigned            -> tip is not credited to anyone
+      // Rounding: we work in integer currency-units (paise/cents) so the two
+      // halves always sum back to the whole tip. Any odd unit goes to the
+      // staff (arbitrary but deterministic).
+      if (tipAmount > 0 && (order.chefId || order.staffId)) {
+        const totalUnits = Math.round(tipAmount * 100);
+        const chefId = order.chefId ? String(order.chefId) : null;
+        const staffId = order.staffId ? String(order.staffId) : null;
+
+        let chefUnits = 0;
+        let staffUnits = 0;
+        if (chefId && staffId) {
+          if (chefId === staffId) {
+            // Same person cooked and served (rare, e.g. admin acting as both):
+            // they get the whole tip, no split needed.
+            chefUnits = totalUnits;
+          } else {
+            chefUnits = Math.floor(totalUnits / 2);
+            staffUnits = totalUnits - chefUnits; // remainder (1 unit if odd) to staff
+          }
+        } else if (chefId) {
+          chefUnits = totalUnits;
+        } else if (staffId) {
+          staffUnits = totalUnits;
+        }
+
+        const ops: Promise<any>[] = [];
+        if (chefUnits > 0) {
+          ops.push(
+            User.updateOne(
+              { _id: order.chefId },
+              { $inc: { tipsEarned: chefUnits / 100 } },
+            ).exec(),
+          );
+        }
+        if (staffUnits > 0) {
+          ops.push(
+            User.updateOne(
+              { _id: order.staffId },
+              { $inc: { tipsEarned: staffUnits / 100 } },
+            ).exec(),
+          );
+        }
+        await Promise.all(ops);
       }
 
       const grandTotal = subtotalSum + taxSum + serviceSum + tipAmount;

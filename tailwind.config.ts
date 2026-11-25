@@ -5,6 +5,13 @@ const config: Config = {
     './src/app/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
   ],
+  // Safelist the color shades that TipsDashboard builds dynamically from a
+  // theme prop (emerald for staff, rose for chef). Tailwind's JIT can only see
+  // full literal class names in the source, so classes assembled via template
+  // literals (e.g. `from-${c}-600`) must be listed here or they get purged.
+  safelist: [
+    { pattern: /^(from|to|bg|text|border|hover:bg|hover:text)-(emerald|rose)-(50|100|200|600|700|800)$/ },
+  ],
   theme: {
     extend: {
       colors: {

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import fs from 'fs';
+import path from 'path';
 import dbConnect from '@/lib/db';
 import Order from '@/models/Order';
 import Expense from '@/models/Expense';
@@ -96,7 +98,12 @@ async function collectData(from: Date, to: Date) {
     total: p.total, paymentMethod: p.paymentMethod, paymentStatus: p.paymentStatus, amountPaid: p.amountPaid,
   }));
 
-  const revenue = orderRows.reduce((s, r) => s + r.total, 0);
+  // Restaurant revenue = subtotal + tax + serviceCharge. Tips are a passthrough
+  // to the staff + chef who served the order — NOT restaurant income — so they
+  // are excluded from revenue (and therefore from profit) and reported
+  // separately. Order.total DOES include the tip (what the customer paid), so
+  // we must not sum r.total here.
+  const revenue = orderRows.reduce((s, r) => s + r.subtotal + r.tax + r.serviceCharge, 0);
   const grossSales = orderRows.reduce((s, r) => s + r.subtotal, 0);
   const tax = orderRows.reduce((s, r) => s + r.tax, 0);
   const tips = orderRows.reduce((s, r) => s + r.tip, 0);
@@ -127,7 +134,7 @@ function toCSV(data: Awaited<ReturnType<typeof collectData>>): string {
   lines.push('# Restaurant Financial Report');
   lines.push(`# Range,${s.range}`);
   lines.push(`# Orders,${s.orders},Gross Sales,${s.grossSales},Revenue,${s.revenue}`);
-  lines.push(`# Tax,${s.tax},Tips,${s.tips},Service Charge,(included in revenue)`);
+  lines.push(`# Tax,${s.tax},Tips (staff+chef),${s.tips},Service Charge,(included in revenue)`);
   lines.push(`# Expenses,${s.expenses},Purchases,${s.purchases},Total Cost,${s.totalCost}`);
   lines.push(`# Profit,${s.profit},Margin %,${s.margin},Avg Order,${s.avgOrderValue}`);
   lines.push('');
@@ -161,9 +168,9 @@ function toXLSX(data: Awaited<ReturnType<typeof collectData>>, XLSX: typeof impo
     ['Metric', 'Value'],
     ['Orders', s.orders],
     ['Gross Sales (food value)', s.grossSales],
-    ['Total Revenue (collected)', s.revenue],
+    ['Total Revenue (collected, excl. tips)', s.revenue],
     ['Tax Collected', s.tax],
-    ['Tips', s.tips],
+    ['Tips (passthrough to staff + chef)', s.tips],
     ['Expenses', s.expenses],
     ['Purchases', s.purchases],
     ['Total Cost', s.totalCost],
@@ -178,17 +185,51 @@ function toXLSX(data: Awaited<ReturnType<typeof collectData>>, XLSX: typeof impo
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
 
+
+/**
+ * Map common Unicode currency symbols to an ASCII-safe label, used only as a
+ * fallback when the bundled Unicode TTF can't be embedded (so the PDF still
+ * renders instead of crashing on pdf-lib's WinAnsi-only StandardFonts). When
+ * the Unicode font IS embedded (the normal path), the original symbol is used
+ * unchanged.
+ */
+function sanitizeCurrency(symbol: string): string {
+  const map: Record<string, string> = { '\u20b9': 'INR ', '$': '$', '\u20ac': 'EUR ', '\u00a3': 'GBP ', '\u00a5': 'JPY ', '\u09f3': 'BDT ' };
+  const s = (symbol || '').trim();
+  if (!s) return '';
+  if (map[s]) return map[s];
+  // Any char outside Latin-1 -> replace with '?' to stay WinAnsi-safe.
+  return s.replace(/[^\x00-\xff]/g, '?');
+}
+
 function toPDF(data: Awaited<ReturnType<typeof collectData>>, restaurantName: string, currency: string, pdfLib: typeof import('pdf-lib')): Promise<Buffer> {
   const { PDFDocument, StandardFonts, rgb } = pdfLib;
-  const fmt = (n: number) => `${currency}${(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const s = data.summary;
   const PAGE_W = 595.28, PAGE_H = 841.89; // A4 in points
   const MARGIN = 40;
 
   return (async () => {
     const doc = await PDFDocument.create();
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
+    // pdf-lib's StandardFonts only encode WinAnsi/Latin-1, so they cannot
+    // render Unicode currency symbols like ₹ (U+20B9), ৳, ¥. We embed DejaVu
+    // Sans (bundled in public/fonts) which covers those glyphs. If the TTF
+    // can't be read for any reason, we fall back to Helvetica and sanitize the
+    // currency symbol to an ASCII-safe form so the PDF still renders.
+    let font: Awaited<ReturnType<typeof doc.embedFont>>;
+    let fontBold: Awaited<ReturnType<typeof doc.embedFont>>;
+    let pdfCurrency = currency;
+    try {
+      const regularBytes = fs.readFileSync(path.join(process.cwd(), 'public', 'fonts', 'DejaVuSans.ttf'));
+      const boldBytes = fs.readFileSync(path.join(process.cwd(), 'public', 'fonts', 'DejaVuSans-Bold.ttf'));
+      font = await doc.embedFont(regularBytes, { subset: true });
+      fontBold = await doc.embedFont(boldBytes, { subset: true });
+    } catch {
+      // Fallback: standard fonts + ASCII-sanitized currency symbol.
+      font = await doc.embedFont(StandardFonts.Helvetica);
+      fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
+      pdfCurrency = sanitizeCurrency(currency);
+    }
+    const fmtPdf = (n: number) => `${pdfCurrency}${(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const gray = rgb(0.39, 0.45, 0.55);
     const dark = rgb(0.06, 0.09, 0.16);
     const slate = rgb(0.97, 0.98, 0.99);
@@ -217,16 +258,16 @@ function toPDF(data: Awaited<ReturnType<typeof collectData>>, restaurantName: st
     // KPI grid (3 cols)
     const kpis: [string, string, typeof dark][] = [
       ['Orders', String(s.orders), dark],
-      ['Gross Sales', fmt(s.grossSales), dark],
-      ['Total Revenue', fmt(s.revenue), dark],
-      ['Tax Collected', fmt(s.tax), dark],
-      ['Tips', fmt(s.tips), dark],
-      ['Expenses', fmt(s.expenses), dark],
-      ['Purchases', fmt(s.purchases), dark],
-      ['Total Cost', fmt(s.totalCost), dark],
-      ['Net Profit', fmt(s.profit), profitColor],
+      ['Gross Sales', fmtPdf(s.grossSales), dark],
+      ['Total Revenue (excl. tips)', fmtPdf(s.revenue), dark],
+      ['Tax Collected', fmtPdf(s.tax), dark],
+      ['Tips (staff + chef)', fmtPdf(s.tips), dark],
+      ['Expenses', fmtPdf(s.expenses), dark],
+      ['Purchases', fmtPdf(s.purchases), dark],
+      ['Total Cost', fmtPdf(s.totalCost), dark],
+      ['Net Profit', fmtPdf(s.profit), profitColor],
       ['Profit Margin', `${s.margin}%`, dark],
-      ['Avg Order Value', fmt(s.avgOrderValue), dark],
+      ['Avg Order Value', fmtPdf(s.avgOrderValue), dark],
     ];
     const colW = (PAGE_W - 2 * MARGIN) / 3;
     const cellH = 38;
@@ -277,13 +318,13 @@ function toPDF(data: Awaited<ReturnType<typeof collectData>>, restaurantName: st
       y -= 14;
     };
 
-    const orderRows = data.orderRows.slice(0, 30).map((r) => [r.date, r.orderNumber, String(r.tableNumber), String(r.items), fmt(r.subtotal), fmt(r.total), r.paymentMethod]);
+    const orderRows = data.orderRows.slice(0, 30).map((r) => [r.date, r.orderNumber, String(r.tableNumber), String(r.items), fmtPdf(r.subtotal), fmtPdf(r.total), r.paymentMethod]);
     drawTable('Orders', ['Date', 'Order #', 'Table', 'Items', 'Subtotal', 'Total', 'Pay'], orderRows, [65, 75, 40, 40, 70, 70, 50]);
 
-    const expRows = data.expenseRows.slice(0, 30).map((r) => [r.date, r.category, r.description.slice(0, 30), fmt(r.amount), r.paymentMethod]);
+    const expRows = data.expenseRows.slice(0, 30).map((r) => [r.date, r.category, r.description.slice(0, 30), fmtPdf(r.amount), r.paymentMethod]);
     drawTable('Expenses', ['Date', 'Category', 'Description', 'Amount', 'Pay'], expRows, [65, 80, 130, 70, 50]);
 
-    const purRows = data.purchaseRows.slice(0, 30).map((r) => [r.date, r.category, (r.supplier || '').slice(0, 25), String(r.items), fmt(r.subtotal), fmt(r.total), r.paymentStatus]);
+    const purRows = data.purchaseRows.slice(0, 30).map((r) => [r.date, r.category, (r.supplier || '').slice(0, 25), String(r.items), fmtPdf(r.subtotal), fmtPdf(r.total), r.paymentStatus]);
     drawTable('Purchases', ['Date', 'Category', 'Supplier', 'Items', 'Subtotal', 'Total', 'Status'], purRows, [65, 75, 110, 40, 70, 70, 50]);
 
     const bytes = await doc.save();

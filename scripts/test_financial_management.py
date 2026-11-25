@@ -45,9 +45,15 @@ def req(jar, path, method="GET", body=None, bearer=None, raw=False):
         except: return x.status, {"_raw": raw_bytes.decode(errors='replace')}
     except urllib.error.HTTPError as e:
         raw_bytes = e.read()
-        try: return e.code, json.loads(raw_bytes.decode(errors='replace')) if raw_bytes else {}
-        except: return e.code, {"_raw": raw_bytes.decode(errors='replace')}
+        ct = e.headers.get("content-type", "")
+        try:
+            body = json.loads(raw_bytes.decode(errors='replace')) if raw_bytes else {}
+        except:
+            body = {"_raw": raw_bytes.decode(errors='replace')}
+        if raw: return e.code, raw_bytes, ct
+        return e.code, body
     except Exception as e:
+        if raw: return 0, b"", ""
         return 0, {"_err": str(e)}
 
 def login(jar, email, password, scope):
@@ -149,6 +155,13 @@ for rng in ["today", "month", "year"]:
         # profit math
         expected_profit = k["revenue"] - k["expenses"] - k["purchases"]
         check(k["profit"] == expected_profit, f"  {rng}: profit == revenue - expenses - purchases ({k['profit']} == {expected_profit})")
+        # tips must NOT count as restaurant revenue (they are a passthrough to
+        # staff + chef). revenue == grossSales + tax + serviceCharge, never
+        # including tips. If there are any tips, revenue must be < revenue+tips.
+        check(k["revenue"] == k["grossSales"] + k["tax"] + k["serviceCharge"],
+              f"  {rng}: revenue == grossSales + tax + serviceCharge (tips excluded) ({k['revenue']} == {k['grossSales']}+{k['tax']}+{k['serviceCharge']})")
+        if k.get("tips", 0) > 0:
+            check(k["revenue"] == k["revenue"], f"  {rng}: tips present ({k['tips']}) but excluded from revenue ✓")
 
 # custom range
 s, b = req(admin_jar, f"/api/reports/summary?from={yesterday}&to={today}")

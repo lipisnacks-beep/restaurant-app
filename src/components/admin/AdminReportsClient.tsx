@@ -155,7 +155,7 @@ export default function AdminReportsClient() {
             <KpiCard label="Net Profit" value={formatCurrency(k.profit, cur)} icon={profitPositive ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />} color={profitPositive ? 'green' : 'red'} sub={`${k.margin}% margin`} />
             <KpiCard label="Total Cost" value={formatCurrency(k.totalCost, cur)} icon={<Coins className="w-5 h-5" />} color="amber" sub="Expenses + Purchases" />
             <KpiCard label="Tax Collected" value={formatCurrency(k.tax, cur)} icon={<Receipt className="w-5 h-5" />} color="slate" sub="from paid orders" />
-            <KpiCard label="Tips" value={formatCurrency(k.tips, cur)} icon={<Coins className="w-5 h-5" />} color="amber" sub="service tips" />
+            <KpiCard label="Tips" value={formatCurrency(k.tips, cur)} icon={<Coins className="w-5 h-5" />} color="amber" sub="passthrough to staff + chef" />
           </div>
 
           {/* Trend chart */}
