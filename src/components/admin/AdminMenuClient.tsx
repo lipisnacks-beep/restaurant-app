@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { api } from '@/lib/apiClient';
 import { toast } from 'sonner';
 import { formatCurrency } from '@/lib/utils';
+import { useSettings } from '@/components/ui/Brand';
 import { Plus, Pencil, Trash2, Loader2, Upload, X, Leaf } from 'lucide-react';
 
 interface MenuItem {
@@ -23,6 +24,7 @@ const EMPTY = {
 };
 
 export default function AdminMenuClient() {
+  const { currencySymbol } = useSettings();
   const [items, setItems] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<MenuItem | null>(null);
@@ -188,7 +190,7 @@ export default function AdminMenuClient() {
                   </datalist>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Price (₹)</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Price ({currencySymbol})</label>
                   <input type="number" min={0} className="input" value={form.price}
                     onChange={(e) => setForm({ ...form, price: Number(e.target.value) })} />
                 </div>

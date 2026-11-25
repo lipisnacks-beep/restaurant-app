@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/apiClient';
+import { setCurrencySymbol } from '@/lib/utils';
 import { UtensilsCrossed } from 'lucide-react';
 import {
   DEFAULT_SETTINGS,
@@ -22,13 +23,23 @@ const FALLBACK_SETTINGS: RestaurantSettings = {
  * Hook: load the FULL restaurant settings once on mount. Returns the cached
  * defaults synchronously on first render (so headers don't flash empty) and
  * the real value as soon as the fetch resolves.
+ *
+ * As a side effect, it also pushes the admin-configured `currencySymbol` into
+ * the shared `formatCurrency()` runtime via `setCurrencySymbol()`. Because this
+ * hook runs inside <Brand>, which is rendered by every portal shell (admin /
+ * staff / chef), a single fetch here makes every `formatCurrency()` call across
+ * the whole portal use the dynamic symbol — no need to thread the symbol
+ * through each component's props.
  */
 export function useSettings(): RestaurantSettings {
   const [settings, setSettings] = useState<RestaurantSettings>(FALLBACK_SETTINGS);
   useEffect(() => {
     let active = true;
     api<RestaurantSettings>('/api/settings').then(({ data, ok }) => {
-      if (active && ok && data) setSettings(data);
+      if (active && ok && data) {
+        setSettings(data);
+        setCurrencySymbol(data.currencySymbol);
+      }
     });
     return () => { active = false; };
   }, []);
