@@ -31,6 +31,10 @@ export default function AdminMenuClient() {
   const [form, setForm] = useState<typeof EMPTY>({ ...EMPTY });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // Separate "modal visible" flag. Previously the modal was gated on
+  // `editing || form.name !== ''`, but openNew() resets form.name to '' — so
+  // clicking "Add Item" set the gate to false and the modal never appeared.
+  const [showModal, setShowModal] = useState(false);
 
   const load = useCallback(async () => {
     const { data, ok } = await api<{ items: MenuItem[] }>('/api/menu');
@@ -43,6 +47,7 @@ export default function AdminMenuClient() {
   function openNew() {
     setEditing(null);
     setForm({ ...EMPTY });
+    setShowModal(true);
   }
   function openEdit(it: MenuItem) {
     setEditing(it);
@@ -50,6 +55,12 @@ export default function AdminMenuClient() {
       name: it.name, description: it.description, category: it.category,
       price: it.price, image: it.image, available: it.available, veg: it.veg, prepTime: it.prepTime,
     });
+    setShowModal(true);
+  }
+  function closeModal() {
+    setShowModal(false);
+    setEditing(null);
+    setForm({ ...EMPTY });
   }
 
   async function onUploadImage(file: File) {
@@ -74,6 +85,16 @@ export default function AdminMenuClient() {
       toast.error('Name, category and price are required');
       return;
     }
+    // Client-side duplicate-name guard (case-insensitive). The server should
+    // also enforce this, but catching it here gives a clearer message and
+    // avoids a confusing server error.
+    const dup = items.find(
+      (it) => it.name.trim().toLowerCase() === form.name.trim().toLowerCase() && it._id !== editing?._id,
+    );
+    if (dup) {
+      toast.error(`A menu item named "${form.name}" already exists`);
+      return;
+    }
     setSaving(true);
     const url = editing ? `/api/menu/${editing._id}` : '/api/menu';
     const method = editing ? 'PATCH' : 'POST';
@@ -83,8 +104,7 @@ export default function AdminMenuClient() {
     setSaving(false);
     if (!ok) { toast.error(error || 'Save failed'); return; }
     toast.success(editing ? 'Updated' : 'Added');
-    setEditing(null);
-    setForm({ ...EMPTY });
+    closeModal();
     load();
   }
 
@@ -144,7 +164,7 @@ export default function AdminMenuClient() {
               <div className="p-3 flex-1 flex flex-col">
                 <div className="flex items-start justify-between gap-2">
                   <h3 className="font-semibold text-gray-800">{it.name}</h3>
-                  <span className="font-semibold text-brand-700">{formatCurrency(it.price)}</span>
+                  <span className="font-semibold text-brand-700">{formatCurrency(it.price, currencySymbol)}</span>
                 </div>
                 <p className="text-xs text-gray-500 mt-1 line-clamp-2">{it.description || '—'}</p>
                 <p className="text-xs text-gray-400 mt-1">{it.category} · {it.prepTime} min</p>
@@ -165,12 +185,12 @@ export default function AdminMenuClient() {
         </div>
       )}
 
-      {(editing || form.name !== '') && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => { setEditing(null); setForm({ ...EMPTY }); }}>
+      {showModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={closeModal}>
           <div className="card p-6 max-w-lg w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold text-gray-800">{editing ? 'Edit Item' : 'New Menu Item'}</h3>
-              <button onClick={() => { setEditing(null); setForm({ ...EMPTY }); }}>
+              <button onClick={closeModal}>
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -230,7 +250,7 @@ export default function AdminMenuClient() {
                 </div>
               </div>
               <div className="flex justify-end gap-2 pt-2">
-                <button onClick={() => { setEditing(null); setForm({ ...EMPTY }); }} className="btn-ghost">Cancel</button>
+                <button onClick={closeModal} className="btn-ghost">Cancel</button>
                 <button onClick={save} disabled={saving} className="btn-primary">
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                   {editing ? 'Save changes' : 'Add item'}

@@ -68,7 +68,7 @@ export async function GET(req: NextRequest) {
     },
     {
       $group: {
-        _id: { $dateToString: { format: '%Y-%m-%d', date: '$completedAt', timezone: 'Asia/Dhaka' } },
+        _id: { $dateToString: { format: '%Y-%m-%d', date: '$completedAt', timezone: 'Asia/Kolkata' } },
         orders: { $sum: 1 },
         // staff earns the full tip when no chef was assigned, half when a
         // chef was also assigned (the 50/50 tip split). This keeps the daily

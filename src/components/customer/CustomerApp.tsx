@@ -943,6 +943,7 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
   const [rating, setRating] = useState(0);
   const [foodRating, setFoodRating] = useState(0);
   const [serviceRating, setServiceRating] = useState(0);
+  const [ambianceRating, setAmbianceRating] = useState(0);
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
   // phase: 'form' (review input) -> 'thanks' (countdown + google link) -> 'closed' (close failed, manual msg)
@@ -950,8 +951,14 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
   const [googleUrl, setGoogleUrl] = useState('');
   const [countdown, setCountdown] = useState(5);
 
-  const grandTotal = sessionOrders.filter((o) => o.paymentStatus === 'paid')
-    .reduce((s, o) => s + o.total, 0);
+  // ThankYouView recomputes grandTotal from per-order totals, which the pay
+  // action mutates. Prefer the authoritative grandTotal from the pay API
+  // response when available so the "your payment of ₹X" matches what the
+  // customer authorised. (Order prop carries it via order.grandTotal if set.)
+  const grandTotal = (order as any).grandTotal != null
+    ? Number((order as any).grandTotal)
+    : sessionOrders.filter((o) => o.paymentStatus === 'paid')
+        .reduce((s, o) => s + o.total, 0);
 
   async function submitReview() {
     if (rating < 1) { toast.error('Please pick an overall rating'); return; }
@@ -962,7 +969,7 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
         order: order._id,
         tableNumber: order.tableNumber,
         customerName: order.customerName || 'Anonymous',
-        rating, foodRating, serviceRating, comment,
+        rating, foodRating, serviceRating, ambianceRating, comment,
       }),
     });
     setSubmitting(false);
@@ -1043,7 +1050,7 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <p className="text-xs text-gray-500 mb-1">Food</p>
               <div className="flex gap-0.5">
@@ -1060,6 +1067,16 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
                 {[1, 2, 3, 4, 5].map((i) => (
                   <button key={i} onClick={() => setServiceRating(i)} aria-label={`Service ${i}`}>
                     <Star className={`w-5 h-5 ${i <= serviceRating ? 'fill-amber-400 text-amber-400' : 'text-gray-300'}`} />
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 mb-1">Ambiance</p>
+              <div className="flex gap-0.5">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <button key={i} onClick={() => setAmbianceRating(i)} aria-label={`Ambiance ${i}`}>
+                    <Star className={`w-5 h-5 ${i <= ambianceRating ? 'fill-amber-400 text-amber-400' : 'text-gray-300'}`} />
                   </button>
                 ))}
               </div>

@@ -10,25 +10,43 @@ import {
   getCustomerSessionId,
   clearCustomerSessionCookie,
 } from '@/lib/auth';
-import { ok, fail } from '@/lib/utils';
+import { ok, fail, serverError } from '@/lib/utils';
 import { getSettings } from '@/lib/settings';
 
 export const dynamic = 'force-dynamic';
 
 // GET /api/reviews  -> list reviews (admin dashboard)
 export async function GET(req: NextRequest) {
-  await dbConnect();
-  const { searchParams } = new URL(req.url);
-  const limit = Math.min(Number(searchParams.get('limit') || '50'), 200);
-  const reviews = await Review.find().sort({ createdAt: -1 }).limit(limit).lean();
+  try {
+    await dbConnect();
+    const { searchParams } = new URL(req.url);
+    const limit = Math.min(Number(searchParams.get('limit') || '50'), 200);
+    const reviews = await Review.find().sort({ createdAt: -1 }).limit(limit).lean();
 
-  // Compute average ratings
-  const agg = await Review.aggregate([
-    { $group: { _id: null, avg: { $avg: '$rating' }, count: { $sum: 1 } } },
-  ]);
-  const summary = agg[0] || { avg: 0, count: 0 };
+    // Compute ALL-TIME summary aggregates over the WHOLE collection (not the
+    // page-limited list). Previously the admin's "Google Posts" card counted
+    // postedToGoogle only across the displayed 100 reviews, under-reporting
+    // whenever reviews exceeded the limit. Now googlePosts comes from the
+    // aggregate so it matches "Total Reviews".
+    const agg: any[] = await Review.aggregate([
+      {
+        $group: {
+          _id: null,
+          avg: { $avg: '$rating' },
+          count: { $sum: 1 },
+          googlePosts: { $sum: { $cond: ['$postedToGoogle', 1, 0] } },
+          foodAvg: { $avg: '$foodRating' },
+          serviceAvg: { $avg: '$serviceRating' },
+          ambianceAvg: { $avg: '$ambianceRating' },
+        },
+      },
+    ]);
+    const summary = agg[0] || { avg: 0, count: 0, googlePosts: 0, foodAvg: 0, serviceAvg: 0, ambianceAvg: 0 };
 
-  return ok({ reviews, summary });
+    return ok({ reviews, summary });
+  } catch (err) {
+    return serverError(err);
+  }
 }
 
 /**

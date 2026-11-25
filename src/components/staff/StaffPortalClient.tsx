@@ -488,7 +488,10 @@ function DeliveryCard({ order, accent, children }: { order: Order; accent: strin
           <p className="font-semibold text-gray-800">{order.orderNumber}</p>
           <p className="text-sm text-gray-600">Table {order.tableNumber}{order.customerName ? ` · ${order.customerName}` : ''}</p>
         </div>
-        <span className="text-xs text-gray-400">{timeAgo(order.readyAt || order.createdAt)}</span>
+        {/* For a SERVED order (Awaiting Payment) the relevant timer is how long
+            since the staff delivered it (servedAt), not since the chef finished
+            (readyAt) or the customer placed it (createdAt). */}
+        <span className="text-xs text-gray-400">{timeAgo(order.status === 'served' ? (order.servedAt || order.readyAt || order.createdAt) : (order.readyAt || order.createdAt))}</span>
       </div>
       <ul className="mt-3 space-y-1.5">
         {order.items.map((i, idx) => (

@@ -3,6 +3,7 @@ import dbConnect from '@/lib/db';
 import Purchase from '@/models/Purchase';
 import { getSession } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden, serverError } from '@/lib/utils';
+import { parseDateFromInput, parseDateToInput } from '@/lib/dateRange';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,8 +51,16 @@ export async function GET(req: NextRequest) {
     const filter: Record<string, unknown> = {};
     if (from || to) {
       const d: Record<string, Date> = {};
-      if (from) d.$gte = new Date(from);
-      if (to) d.$lte = new Date(to);
+      // Parse YYYY-MM-DD inputs as IST day boundaries (see expenses route for
+      // the off-by-one bug this fixes).
+      if (from) {
+        const f = parseDateFromInput(from);
+        if (f) d.$gte = f;
+      }
+      if (to) {
+        const t = parseDateToInput(to);
+        if (t) d.$lte = t;
+      }
       filter.date = d;
     }
     if (category) filter.category = category;

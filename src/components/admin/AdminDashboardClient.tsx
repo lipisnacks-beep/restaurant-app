@@ -15,8 +15,9 @@ interface Stats {
   pendingOrders: number;
   preparingOrders: number;
   readyOrders: number;
-  averageRating: number;
-  totalReviews: number;
+  averageRating: number;   // today-scoped average
+  todayReviews: number;    // today's review count (matches the avg window)
+  totalReviews: number;    // all-time count
   topItems: { _id: string; qty: number; revenue: number }[];
 }
 
@@ -49,7 +50,7 @@ export default function AdminDashboardClient() {
     { label: 'Pending Orders', value: stats.pendingOrders, icon: Clock, color: 'bg-orange-100 text-orange-700' },
     { label: 'Preparing', value: stats.preparingOrders, icon: ChefHat, color: 'bg-rose-100 text-rose-700' },
     { label: 'Ready to Serve', value: stats.readyOrders, icon: ConciergeBell, color: 'bg-teal-100 text-teal-700' },
-    { label: 'Avg Rating', value: `${stats.averageRating} ★ (${stats.totalReviews})`, icon: Star, color: 'bg-yellow-100 text-yellow-700' },
+    { label: "Avg Rating (today)", value: `${stats.averageRating} ★ (${stats.todayReviews || 0} today · ${stats.totalReviews} all-time)`, icon: Star, color: 'bg-yellow-100 text-yellow-700' },
   ];
 
   return (

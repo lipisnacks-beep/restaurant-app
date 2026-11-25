@@ -1,7 +1,7 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { Fragment, useEffect, useState, useCallback } from 'react';
 import { api, getTabToken } from '@/lib/apiClient';
-import { formatCurrency, formatDate } from '@/lib/utils';
+import { formatCurrency, formatDate, formatDateOnly } from '@/lib/utils';
 import { toast } from 'sonner';
 import {
   ShoppingCart, Plus, Pencil, Trash2, Loader2, Search, X, ChevronDown, ChevronRight,
@@ -140,6 +140,10 @@ export default function AdminPurchasesClient() {
     const params = new URLSearchParams();
     if (filters.from) params.set('from', filters.from);
     if (filters.to) params.set('to', filters.to);
+    // Forward category + q so the exported CSV matches the on-screen filtered
+    // table (expenses had the same bug; both now forward all active filters).
+    if (filters.category) params.set('category', filters.category);
+    if (filters.q) params.set('q', filters.q);
     const token = getTabToken();
     const res = await fetch(`/api/purchases?${params.toString()}&limit=500`, {
       credentials: 'include', headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -245,14 +249,17 @@ export default function AdminPurchasesClient() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {items.map((it) => (
-                  <>
-                    <tr key={it._id} className="hover:bg-slate-50">
+                  // Use a keyed Fragment (not a bare <>) so React can track
+                  // the row + its expanded detail together without key warnings
+                  // or remount churn when expanded toggles.
+                  <Fragment key={it._id}>
+                    <tr className="hover:bg-slate-50">
                       <td className="px-4 py-2.5">
                         <button onClick={() => setExpanded(expanded === it._id ? null : it._id)} className="text-slate-400">
                           {expanded === it._id ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                         </button>
                       </td>
-                      <td className="px-4 py-2.5 whitespace-nowrap">{formatDate(it.date)}</td>
+                      <td className="px-4 py-2.5 whitespace-nowrap">{formatDateOnly(it.date)}</td>
                       <td className="px-4 py-2.5"><span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs capitalize">{it.category}</span></td>
                       <td className="px-4 py-2.5">{it.supplier || '—'}</td>
                       <td className="px-4 py-2.5 text-gray-600">{it.items.length}</td>
@@ -295,7 +302,7 @@ export default function AdminPurchasesClient() {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>

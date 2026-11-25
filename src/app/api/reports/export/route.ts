@@ -7,7 +7,8 @@ import Expense from '@/models/Expense';
 import Purchase from '@/models/Purchase';
 import { getSettings } from '@/lib/settings';
 import { getSession } from '@/lib/auth';
-import { fail, unauthorized, forbidden } from '@/lib/utils';
+import { fail, unauthorized, forbidden, serverError } from '@/lib/utils';
+import { parseDateFromInput, parseDateToInput } from '@/lib/dateRange';
 
 export const dynamic = 'force-dynamic';
 // Keep these heavy server-only libs out of the route's module graph until the
@@ -17,29 +18,49 @@ export const dynamic = 'force-dynamic';
 // in next.config.js so the dynamic import resolves to the real package.
 export const runtime = 'nodejs';
 
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
+/** IST-aware range resolver (mirrors reports/summary). The previous code used
+ *  the server's process timezone (UTC on Vercel), splitting the restaurant's
+ *  dinner service across two days. */
 function resolveRange(q: URLSearchParams): { from: Date; to: Date } {
   const fromQ = q.get('from');
   const toQ = q.get('to');
   if (fromQ && toQ) {
-    const from = new Date(fromQ); from.setHours(0, 0, 0, 0);
-    const to = new Date(toQ); to.setHours(23, 59, 59, 999);
-    return { from, to };
+    const from = parseDateFromInput(fromQ);
+    const to = parseDateToInput(toQ);
+    if (from && to) return { from, to };
   }
-  const now = new Date();
+  const shifted = new Date(Date.now() + IST_OFFSET_MS);
+  const y = shifted.getUTCFullYear();
+  const m = shifted.getUTCMonth();
+  const d = shifted.getUTCDate();
+  const startTodayIST = new Date(Date.UTC(y, m, d) - IST_OFFSET_MS);
+  const endTodayIST = new Date(Date.UTC(y, m, d, 23, 59, 59, 999) - IST_OFFSET_MS);
   const range = q.get('range') || 'today';
-  const from = new Date(now); const to = new Date(now); to.setHours(23, 59, 59, 999);
   switch (range) {
-    case 'yesterday': from.setDate(now.getDate() - 1); from.setHours(0,0,0,0); break;
-    case '7d': from.setDate(now.getDate() - 6); from.setHours(0,0,0,0); break;
-    case '30d': from.setDate(now.getDate() - 29); from.setHours(0,0,0,0); break;
-    case 'month': from.setDate(1); from.setHours(0,0,0,0); break;
-    case 'lastmonth':
-      from.setMonth(now.getMonth() - 1, 1); from.setHours(0,0,0,0);
-      to.setFullYear(now.getFullYear(), now.getMonth(), 0); to.setHours(23,59,59,999); break;
-    case 'year': from.setMonth(0, 1); from.setHours(0,0,0,0); break;
-    case 'today': default: from.setHours(0,0,0,0); break;
+    case 'yesterday':
+      return { from: new Date(startTodayIST.getTime() - 86400000), to: new Date(startTodayIST.getTime() - 1) };
+    case '7d':
+      return { from: new Date(startTodayIST.getTime() - 6 * 86400000), to: endTodayIST };
+    case '30d':
+      return { from: new Date(startTodayIST.getTime() - 29 * 86400000), to: endTodayIST };
+    case 'month':
+      return { from: new Date(Date.UTC(y, m, 1) - IST_OFFSET_MS), to: endTodayIST };
+    case 'lastmonth': {
+      const lastMonthIdx = m === 0 ? 11 : m - 1;
+      const lastMonthYear = m === 0 ? y - 1 : y;
+      return {
+        from: new Date(Date.UTC(lastMonthYear, lastMonthIdx, 1) - IST_OFFSET_MS),
+        to: new Date(Date.UTC(y, m, 1) - IST_OFFSET_MS - 1),
+      };
+    }
+    case 'year':
+      return { from: new Date(Date.UTC(y, 0, 1) - IST_OFFSET_MS), to: endTodayIST };
+    case 'today':
+    default:
+      return { from: startTodayIST, to: endTodayIST };
   }
-  return { from, to };
 }
 
 interface OrderRow {
@@ -59,7 +80,9 @@ interface PurchaseRow {
 
 async function collectData(from: Date, to: Date) {
   const [orders, expenses, purchases] = await Promise.all([
-    Order.find({ createdAt: { $gte: from, $lte: to }, paymentStatus: 'paid' })
+    // Paid, non-cancelled orders (cancel now flips a paid order to 'refunded',
+    // but exclude cancelled too to guard against legacy data).
+    Order.find({ createdAt: { $gte: from, $lte: to }, paymentStatus: 'paid', status: { $ne: 'cancelled' } })
       .sort({ createdAt: 1 }).lean() as unknown as {
         createdAt: Date; orderNumber: string; tableNumber: number;
         items: { quantity: number }[]; subtotal: number; taxAmount: number;
@@ -77,8 +100,13 @@ async function collectData(from: Date, to: Date) {
     }[],
   ]);
 
+  // Format row dates in IST (Asia/Kolkata) so a row placed at 23:00 IST isn't
+  // attributed to the next UTC calendar day in the export.
+  const istDate = (d: Date) =>
+    new Date(d.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+
   const orderRows: OrderRow[] = orders.map((o) => ({
-    date: new Date(o.createdAt).toISOString().slice(0, 10),
+    date: istDate(o.createdAt),
     orderNumber: o.orderNumber,
     tableNumber: o.tableNumber,
     items: o.items.reduce((s: number, it) => s + it.quantity, 0),
@@ -87,12 +115,12 @@ async function collectData(from: Date, to: Date) {
     paymentMethod: o.paymentMethod || '', paymentStatus: o.paymentStatus,
   }));
   const expenseRows: ExpenseRow[] = expenses.map((e) => ({
-    date: new Date(e.date).toISOString().slice(0, 10),
+    date: istDate(e.date),
     category: e.category, description: e.description, amount: e.amount,
     paymentMethod: e.paymentMethod, vendor: e.vendor, invoiceNumber: e.invoiceNumber, note: e.note,
   }));
   const purchaseRows: PurchaseRow[] = purchases.map((p) => ({
-    date: new Date(p.date).toISOString().slice(0, 10),
+    date: istDate(p.date),
     category: p.category, supplier: p.supplier, invoiceNumber: p.invoiceNumber,
     items: p.items.length, subtotal: p.subtotal, tax: p.taxAmount, discount: p.discount,
     total: p.total, paymentMethod: p.paymentMethod, paymentStatus: p.paymentStatus, amountPaid: p.amountPaid,
@@ -115,7 +143,7 @@ async function collectData(from: Date, to: Date) {
   return {
     orderRows, expenseRows, purchaseRows,
     summary: {
-      range: `${from.toISOString().slice(0, 10)} to ${to.toISOString().slice(0, 10)}`,
+      range: `${istDate(from)} to ${istDate(to)}`,
       orders: orderRows.length, grossSales, revenue, tax, tips,
       expenses: exp, purchases: pur, totalCost, profit,
       margin: revenue ? Math.round((profit / revenue) * 1000) / 10 : 0,
@@ -337,46 +365,52 @@ function toPDF(data: Awaited<ReturnType<typeof collectData>>, restaurantName: st
  *   Admin-only. Streams the file download.
  */
 export async function GET(req: NextRequest) {
-  const session = await getSession();
-  if (!session) return unauthorized();
-  if (session.role !== 'admin') return forbidden();
+  try {
+    const session = await getSession();
+    if (!session) return unauthorized();
+    if (session.role !== 'admin') return forbidden();
 
-  const q = new URL(req.url).searchParams;
-  const format = (q.get('format') || 'xlsx').toLowerCase();
-  if (!['xlsx', 'csv', 'pdf'].includes(format)) return fail('Invalid format. Use xlsx, csv or pdf.');
+    const q = new URL(req.url).searchParams;
+    const format = (q.get('format') || 'xlsx').toLowerCase();
+    if (!['xlsx', 'csv', 'pdf'].includes(format)) return fail('Invalid format. Use xlsx, csv or pdf.');
 
-  await dbConnect();
-  const { from, to } = resolveRange(q);
-  const settings = await getSettings();
-  const data = await collectData(from, to);
-  const stamp = `${from.toISOString().slice(0,10)}_to_${to.toISOString().slice(0,10)}`;
-  const name = `restaurant_report_${stamp}`;
+    await dbConnect();
+    const { from, to } = resolveRange(q);
+    const settings = await getSettings();
+    const data = await collectData(from, to);
+    // Filename stamp in IST so it matches the data window.
+    const istStamp = (d: Date) => new Date(d.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+    const stamp = `${istStamp(from)}_to_${istStamp(to)}`;
+    const name = `restaurant_report_${stamp}`;
 
-  if (format === 'csv') {
-    return new NextResponse(toCSV(data), {
-      headers: {
-        'Content-Type': 'text/csv; charset=utf-8',
-        'Content-Disposition': `attachment; filename="${name}.csv"`,
-      },
-    });
-  }
-  if (format === 'xlsx') {
-    const XLSX = await import('xlsx');
-    const buf = toXLSX(data, XLSX);
+    if (format === 'csv') {
+      return new NextResponse(toCSV(data), {
+        headers: {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${name}.csv"`,
+        },
+      });
+    }
+    if (format === 'xlsx') {
+      const XLSX = await import('xlsx');
+      const buf = toXLSX(data, XLSX);
+      return new NextResponse(new Uint8Array(buf), {
+        headers: {
+          'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'Content-Disposition': `attachment; filename="${name}.xlsx"`,
+        },
+      });
+    }
+    // pdf
+    const pdfLib = await import('pdf-lib');
+    const buf = await toPDF(data, settings.restaurantName, settings.currencySymbol || '₹', pdfLib);
     return new NextResponse(new Uint8Array(buf), {
       headers: {
-        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'Content-Disposition': `attachment; filename="${name}.xlsx"`,
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="${name}.pdf"`,
       },
     });
+  } catch (err) {
+    return serverError(err);
   }
-  // pdf
-  const pdfLib = await import('pdf-lib');
-  const buf = await toPDF(data, settings.restaurantName, settings.currencySymbol || '₹', pdfLib);
-  return new NextResponse(new Uint8Array(buf), {
-    headers: {
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="${name}.pdf"`,
-    },
-  });
 }

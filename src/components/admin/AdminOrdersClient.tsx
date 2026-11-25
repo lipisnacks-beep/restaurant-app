@@ -30,7 +30,10 @@ export default function AdminOrdersClient() {
   const [filter, setFilter] = useState<string>('');
 
   const load = useCallback(async () => {
-    const url = filter ? `/api/orders?status=${filter}` : '/api/orders?role=admin&limit=200';
+    // Always send role=admin so the server applies the IST "today" window even
+    // when a status filter is also set. Previously a status chip bypassed the
+    // date filter and returned ALL-TIME orders under a "Today's orders" header.
+    const url = `/api/orders?role=admin&limit=200${filter ? `&status=${filter}` : ''}`;
     const { data, ok } = await api<{ orders: Order[] }>(url);
     if (ok && data) setOrders(data.orders);
     setLoading(false);
@@ -95,7 +98,7 @@ export default function AdminOrdersClient() {
                       <p className="font-medium text-gray-800">{o.orderNumber}</p>
                       {o.customerName && <p className="text-xs text-gray-500">{o.customerName}</p>}
                     </td>
-                    <td className="p-3">T{o.tableNumber}</td>
+                    <td className="p-3">{o.tableNumber != null ? `T${o.tableNumber}` : '—'}</td>
                     <td className="p-3">
                       <div className="text-xs text-gray-600">
                         {o.items.map((i) => `${i.quantity}× ${i.name}`).join(', ')}
@@ -107,7 +110,12 @@ export default function AdminOrdersClient() {
                     </td>
                     <td className="p-3">
                       {o.paymentStatus === 'paid' ? (
-                        <span className="badge bg-emerald-100 text-emerald-700 capitalize">{o.paymentMethod || 'paid'}</span>
+                        // Show the payment METHOD (cash/upi/card) when known;
+                        // fall back to '—' rather than the misleading 'paid'
+                        // (which is the status, not a method).
+                        <span className="badge bg-emerald-100 text-emerald-700 capitalize">{o.paymentMethod || '—'}</span>
+                      ) : o.paymentStatus === 'refunded' ? (
+                        <span className="badge bg-red-100 text-red-700 capitalize">refunded</span>
                       ) : (
                         <span className="badge bg-gray-100 text-gray-500 capitalize">{o.paymentStatus}</span>
                       )}

@@ -22,14 +22,22 @@ function Stars({ value }: { value: number }) {
 
 export default function AdminReviewsClient() {
   const [reviews, setReviews] = useState<Review[]>([]);
-  const [summary, setSummary] = useState({ avg: 0, count: 0 });
+  // summary comes from a server-side aggregate over ALL reviews (not the
+  // page-limited list), so the cards stay correct when reviews exceed the
+  // 100-row display limit.
+  const [summary, setSummary] = useState({
+    avg: 0, count: 0, googlePosts: 0, foodAvg: 0, serviceAvg: 0, ambianceAvg: 0,
+  });
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const { data, ok } = await api<{ reviews: Review[]; summary: { avg: number; count: number } }>('/api/reviews?limit=100');
+    const { data, ok } = await api<{
+      reviews: Review[];
+      summary: { avg: number; count: number; googlePosts: number; foodAvg: number; serviceAvg: number; ambianceAvg: number };
+    }>('/api/reviews?limit=100');
     if (ok && data) {
       setReviews(data.reviews);
-      setSummary(data.summary || { avg: 0, count: 0 });
+      setSummary(data.summary || { avg: 0, count: 0, googlePosts: 0, foodAvg: 0, serviceAvg: 0, ambianceAvg: 0 });
     }
     setLoading(false);
   }, []);
@@ -50,7 +58,7 @@ export default function AdminReviewsClient() {
 
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="card p-4">
-          <p className="text-xs text-gray-500">Average Rating</p>
+          <p className="text-xs text-gray-500">Average Rating (all-time)</p>
           <p className="text-2xl font-bold text-amber-600">{(summary.avg || 0).toFixed(1)} ★</p>
         </div>
         <div className="card p-4">
@@ -59,7 +67,8 @@ export default function AdminReviewsClient() {
         </div>
         <div className="card p-4">
           <p className="text-xs text-gray-500">Google Posts</p>
-          <p className="text-2xl font-bold text-sky-600">{reviews.filter((r) => r.postedToGoogle).length}</p>
+          {/* Use the server aggregate (all reviews), not the page-limited list. */}
+          <p className="text-2xl font-bold text-sky-600">{summary.googlePosts || 0}</p>
         </div>
       </div>
 

@@ -22,24 +22,49 @@ export function setCurrencySymbol(symbol: string): void {
 }
 
 /** Format a number as currency. Uses the runtime symbol override (set from
- *  Settings) unless an explicit symbol is passed. */
+ *  Settings) unless an explicit symbol is passed.
+ *
+ *  Guards against null/undefined/NaN/non-numeric input so a missing field
+ *  never renders as "₹NaN" — it renders as the placeholder '—' so the admin
+ *  can tell a genuinely missing value apart from a real ₹0. */
 export function formatCurrency(amount: number, symbol?: string): string {
   const sym = symbol ?? runtimeCurrencySymbol;
-  const formatted = Number(amount || 0).toLocaleString('en-IN', {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return '—';
+  const formatted = n.toLocaleString('en-IN', {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   });
   return `${sym}${formatted}`;
 }
 
-/** Format an ISO date string to a short readable form. */
+/** Format an ISO date string to a short readable form, in the restaurant's
+ *  timezone (Asia/Kolkata). Without an explicit timeZone the result depended
+ *  on the runtime's local TZ (UTC on Vercel) and the same timestamp showed as
+ *  different wall-clock times server-side vs client-side. */
 export function formatDate(iso: string | Date): string {
   const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
   return d.toLocaleString('en-GB', {
     day: '2-digit',
     month: 'short',
     hour: '2-digit',
     minute: '2-digit',
+    timeZone: 'Asia/Kolkata',
+  });
+}
+
+/** Format an ISO date as a date-only string (no time), in Asia/Kolkata.
+ *  Use this for fields that are semantically a calendar date (expense/purchase
+ *  `date`, which is stored as midnight) so we don't fabricate a 05:30 time. */
+export function formatDateOnly(iso: string | Date): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata',
   });
 }
 

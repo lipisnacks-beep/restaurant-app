@@ -5,7 +5,7 @@ import User from '@/models/User';
 import Table from '@/models/Table';
 import CustomerSession from '@/models/CustomerSession';
 import { resolveSessionForRoles, resolveCustomerSessionId } from '@/lib/auth';
-import { ok, fail, unauthorized, forbidden } from '@/lib/utils';
+import { ok, fail, unauthorized, forbidden, serverError } from '@/lib/utils';
 import { assignPendingOrdersToChefs } from '@/lib/chefDispatch';
 import { assignReadyOrdersToStaff } from '@/lib/staffDispatch';
 
@@ -13,10 +13,14 @@ export const dynamic = 'force-dynamic';
 
 // GET /api/orders/[id]
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
-  await dbConnect();
-  const order = await Order.findById(params.id).lean();
-  if (!order) return fail('Order not found', 404);
-  return ok({ order });
+  try {
+    await dbConnect();
+    const order = await Order.findById(params.id).lean();
+    if (!order) return fail('Order not found', 404);
+    return ok({ order });
+  } catch (err) {
+    return serverError(err);
+  }
 }
 
 /**
@@ -33,12 +37,13 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
  * staff-portal action could authenticate as chef and be rejected.
  */
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  const body = await req.json();
-  const { action } = body || {};
+  try {
+    const body = await req.json();
+    const { action } = body || {};
 
-  await dbConnect();
-  const order = await Order.findById(params.id);
-  if (!order) return fail('Order not found', 404);
+    await dbConnect();
+    const order = await Order.findById(params.id);
+    if (!order) return fail('Order not found', 404);
 
   switch (action) {
     case 'start_preparing': {
@@ -222,6 +227,13 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       if (session.role !== 'admin') {
         return forbidden(`Only admin can cancel an order (your role: ${session.role})`);
       }
+      // If the order was already paid, mark it refunded so reports/stats
+      // (which filter on paymentStatus:'paid') stop counting its revenue.
+      // Previously a cancelled-but-paid order still inflated revenue/profit
+      // because cancel left paymentStatus at 'paid'.
+      if (order.paymentStatus === 'paid') {
+        order.paymentStatus = 'refunded';
+      }
       order.status = 'cancelled';
       order.cancelledAt = new Date();
       await order.save();
@@ -233,6 +245,15 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       // just the anchor that tells us which session to settle). Optionally a tip.
       const { paymentMethod, tip = 0 } = body;
       if (!['cash', 'upi', 'card'].includes(paymentMethod)) return fail('Invalid payment method', 422);
+
+      // OWNERSHIP: the caller's customer session cookie MUST match the anchor
+      // order's session. Previously there was no check, so a customer could pay
+      // ANOTHER table's orders by guessing an order id — corrupting that
+      // table's bill and the wrong CustomerSession.
+      const callerCustSessionId = await resolveCustomerSessionId(req);
+      if (!callerCustSessionId || callerCustSessionId !== order.sessionId) {
+        return forbidden('You can only pay for your own table session');
+      }
 
       // Collect every unpaid order that belongs to the same session and is at
       // least ready/served. Still-preparing orders are excluded (the customer
@@ -247,7 +268,14 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         return fail('No payable orders yet — wait for your food to be served', 422);
       }
 
-      const tipAmount = Math.max(0, Number(tip) || 0);
+      // Upper-bound the tip so a malicious client can't inflate chef/staff
+      // balances arbitrarily. Capped at the session's pre-tip bill total.
+      const preTipBill = sessionOrders.reduce(
+        (s, o) => s + o.subtotal + o.taxAmount + o.serviceChargeAmount,
+        0,
+      );
+      const tipAmount = Math.max(0, Math.min(Number(tip) || 0, preTipBill));
+
       let subtotalSum = 0, taxSum = 0, serviceSum = 0;
       for (const o of sessionOrders) {
         subtotalSum += o.subtotal;
@@ -255,6 +283,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         serviceSum += o.serviceChargeAmount;
         o.paymentMethod = paymentMethod;
         o.paymentStatus = 'paid';
+        // Each paid order keeps tip = 0 (the tip is a session-level amount;
+        // embedding the full tip in the anchor order's total made per-order
+        // totals inconsistent and inflated the anchor in receipts/lists).
         o.tip = 0;
         o.total = o.subtotal + o.taxAmount + o.serviceChargeAmount;
         o.status = 'completed';
@@ -262,91 +293,79 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         await o.save();
       }
 
-      // Attach the tip to the anchor order so it shows in the bill/receipt.
-      order.tip = tipAmount;
-      order.total = order.subtotal + order.taxAmount + order.serviceChargeAmount + tipAmount;
-      await order.save();
-
-      // Allocate the tip to the chef + staff who served this order. The tip
-      // belongs to the people who actually made and delivered the food — it is
-      // NOT restaurant income — so it is split equally between the chef
-      // (order.chefId, who cooked it) and the staff (order.staffId, who served
-      // it). Each gets half, credited to their cumulative User.tipsEarned so it
-      // persists across sessions and shows in their portal total.
-      //
-      // Splitting rules:
-      //   - both chef + staff assigned  -> 50/50 split
-      //   - only one assigned           -> that person gets the full tip
-      //   - neither assigned            -> tip is not credited to anyone
-      // Rounding: we work in integer currency-units (paise/cents) so the two
-      // halves always sum back to the whole tip. Any odd unit goes to the
-      // staff (arbitrary but deterministic).
-      if (tipAmount > 0 && (order.chefId || order.staffId)) {
-        const totalUnits = Math.round(tipAmount * 100);
-        const chefId = order.chefId ? String(order.chefId) : null;
-        const staffId = order.staffId ? String(order.staffId) : null;
-
-        let chefUnits = 0;
-        let staffUnits = 0;
-        if (chefId && staffId) {
-          if (chefId === staffId) {
-            // Same person cooked and served (rare, e.g. admin acting as both):
-            // they get the whole tip, no split needed.
-            chefUnits = totalUnits;
-          } else {
-            chefUnits = Math.floor(totalUnits / 2);
-            staffUnits = totalUnits - chefUnits; // remainder (1 unit if odd) to staff
+      // Allocate the tip across ALL the paid orders' contributors (not just
+      // the anchor order's). Previously the whole tip went to the anchor
+      // order's chef/staff, so orders cooked/served by other staff during the
+      // same session earned nothing. We distribute per-order: each paid order
+      // contributes a proportional slice of the tip, split 50/50 between that
+      // order's chef and staff (or fully to whichever is assigned, or to the
+      // same person if chef===staff).
+      if (tipAmount > 0) {
+        const tipPerOrder = tipAmount / sessionOrders.length;
+        // Aggregate increments per user to issue one update per user.
+        const increments = new Map<string, number>();
+        for (const o of sessionOrders) {
+          if (!o.chefId && !o.staffId) continue;
+          const chefId = o.chefId ? String(o.chefId) : null;
+          const staffId = o.staffId ? String(o.staffId) : null;
+          let chefPart = 0;
+          let staffPart = 0;
+          const units = Math.round(tipPerOrder * 100);
+          if (chefId && staffId) {
+            if (chefId === staffId) {
+              chefPart = units; staffPart = 0;
+            } else {
+              chefPart = Math.floor(units / 2);
+              staffPart = units - chefPart;
+            }
+          } else if (chefId) {
+            chefPart = units;
+          } else if (staffId) {
+            staffPart = units;
           }
-        } else if (chefId) {
-          chefUnits = totalUnits;
-        } else if (staffId) {
-          staffUnits = totalUnits;
+          if (chefPart > 0 && chefId) increments.set(chefId, (increments.get(chefId) || 0) + chefPart);
+          if (staffPart > 0 && staffId) increments.set(staffId, (increments.get(staffId) || 0) + staffPart);
         }
-
-        const ops: Promise<any>[] = [];
-        if (chefUnits > 0) {
-          ops.push(
-            User.updateOne(
-              { _id: order.chefId },
-              { $inc: { tipsEarned: chefUnits / 100 } },
-            ).exec(),
-          );
+        // Fix rounding drift: ensure the sum of credited units equals the
+        // whole tip in paise.
+        const credited = [...increments.values()].reduce((a, b) => a + b, 0);
+        const wholeUnits = Math.round(tipAmount * 100);
+        const drift = wholeUnits - credited;
+        if (drift !== 0 && increments.size > 0) {
+          const firstKey = [...increments.keys()][0];
+          increments.set(firstKey, (increments.get(firstKey) || 0) + drift);
         }
-        if (staffUnits > 0) {
-          ops.push(
-            User.updateOne(
-              { _id: order.staffId },
-              { $inc: { tipsEarned: staffUnits / 100 } },
-            ).exec(),
-          );
-        }
-        await Promise.all(ops);
+        await Promise.all(
+          [...increments.entries()].map(([uid, units]) =>
+            User.updateOne({ _id: uid }, { $inc: { tipsEarned: units / 100 } }).exec(),
+          ),
+        );
       }
 
       const grandTotal = subtotalSum + taxSum + serviceSum + tipAmount;
 
       // Mark the CustomerSession as paid + endedAt.
-      const custSessionId = await resolveCustomerSessionId(req);
-      let custSession: any = null;
-      if (custSessionId) {
-        custSession = await CustomerSession.findOne({ sessionId: custSessionId });
-        if (custSession) {
-          custSession.status = 'paid';
-          custSession.endedAt = new Date();
-          custSession.orderCount = sessionOrders.length;
-          custSession.subtotal = subtotalSum;
-          custSession.taxAmount = taxSum;
-          custSession.serviceChargeAmount = serviceSum;
-          custSession.tip = tipAmount;
-          custSession.total = grandTotal;
-          await custSession.save();
+      const custSession = await CustomerSession.findOne({ sessionId: callerCustSessionId });
+      if (custSession) {
+        custSession.status = 'paid';
+        custSession.endedAt = new Date();
+        // Don't overwrite orderCount with just the count of orders paid in
+        // THIS pay action — it was already incremented on each placement, so
+        // overwriting it lost orders that were still preparing at pay time.
+        // Recompute from the true order count for this session instead.
+        custSession.orderCount = await Order.countDocuments({ sessionId: order.sessionId });
+        custSession.subtotal = subtotalSum;
+        custSession.taxAmount = taxSum;
+        custSession.serviceChargeAmount = serviceSum;
+        custSession.tip = tipAmount;
+        custSession.total = grandTotal;
+        await custSession.save();
 
-          // Mark the table session status as 'paid' (still occupied until review/staff frees it).
-          await Table.updateOne(
-            { _id: order.table },
-            { $set: { 'currentSession.sessionStatus': 'paid' } },
-          );
-        }
+        // Mark the table session status as 'paid' (still occupied until review/staff frees it).
+        await Table.updateOne(
+          { _id: order.table },
+          { $set: { 'currentSession.sessionStatus': 'paid' } },
+        );
       }
 
       // If no other unpaid orders remain for this table session, the table is
@@ -393,5 +412,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     }
     default:
       return fail('Unknown action', 422);
+  }
+  } catch (err) {
+    return serverError(err);
   }
 }

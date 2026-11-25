@@ -109,7 +109,9 @@ export default function AdminTablesClient() {
     a.remove();
   }
 
-  const occupiedCount = tables.filter((t) => t.currentSession?.sessionId).length;
+  // Count occupied tables by the presence of a real sessionId (not just a
+  // truthy currentSession object, which can exist with an empty sessionId).
+  const occupiedCount = tables.filter((t) => !!t.currentSession?.sessionId).length;
 
   return (
     <div className="space-y-6">

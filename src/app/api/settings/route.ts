@@ -123,8 +123,12 @@ export async function PUT(req: NextRequest) {
   }
 
   // --- Operating hours ---
+  // Use dot-notation ($set hours.mon, hours.tue, ...) for each day present so
+  // a partial hours update only touches the days the caller sent. The previous
+  // code did $set hours = { mon } which REPLACED the whole hours subdocument,
+  // silently resetting the other 6 days to the schema defaults on the next
+  // customer-facing read.
   if (body.hours !== undefined && typeof body.hours === 'object') {
-    const hoursUpdate: Record<string, { open: string; close: string }> = {};
     for (const d of DAYS) {
       const day = (body.hours as Record<string, { open?: string; close?: string }>)[d];
       if (!day) continue;
@@ -133,9 +137,8 @@ export async function PUT(req: NextRequest) {
       // '' means closed (allowed); otherwise must be valid HH:MM.
       if (open && !HHMM.test(open)) errors.push(`${d} opening time must be HH:MM`);
       if (close && !HHMM.test(close)) errors.push(`${d} closing time must be HH:MM`);
-      hoursUpdate[d] = { open, close };
+      update[`hours.${d}`] = { open, close };
     }
-    if (Object.keys(hoursUpdate).length) update.hours = hoursUpdate;
   }
 
   // --- Payment methods ---

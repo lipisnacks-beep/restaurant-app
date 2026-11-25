@@ -3,7 +3,8 @@ import dbConnect from '@/lib/db';
 import User from '@/models/User';
 import TipWithdrawal from '@/models/TipWithdrawal';
 import { resolveSessionForRoles } from '@/lib/auth';
-import { ok, fail, unauthorized } from '@/lib/utils';
+import { ok, fail, unauthorized, serverError } from '@/lib/utils';
+import { parseDateFromInput, parseDateToInput } from '@/lib/dateRange';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,13 +37,13 @@ export async function POST(req: NextRequest) {
   let fromDate: Date | null = null;
   let toDate: Date | null = null;
   if (from) {
-    const d = new Date(String(from));
-    if (isNaN(d.getTime())) return fail('Invalid "from" date (use YYYY-MM-DD)', 422);
+    const d = parseDateFromInput(String(from));
+    if (!d) return fail('Invalid "from" date (use YYYY-MM-DD)', 422);
     fromDate = d;
   }
   if (to) {
-    const d = new Date(String(to));
-    if (isNaN(d.getTime())) return fail('Invalid "to" date (use YYYY-MM-DD)', 422);
+    const d = parseDateToInput(String(to));
+    if (!d) return fail('Invalid "to" date (use YYYY-MM-DD)', 422);
     toDate = d;
   }
   if (fromDate && toDate && fromDate.getTime() > toDate.getTime()) {

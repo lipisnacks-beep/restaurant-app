@@ -65,7 +65,7 @@ export async function GET(req: NextRequest) {
     },
     {
       $group: {
-        _id: { $dateToString: { format: '%Y-%m-%d', date: '$completedAt', timezone: 'Asia/Dhaka' } },
+        _id: { $dateToString: { format: '%Y-%m-%d', date: '$completedAt', timezone: 'Asia/Kolkata' } },
         orders: { $sum: 1 },
         // chef earns full tip when no staff, half when staff also assigned.
         tips: {

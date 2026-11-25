@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
 import { api, getTabToken } from '@/lib/apiClient';
-import { formatCurrency, formatDate } from '@/lib/utils';
+import { formatCurrency, formatDate, formatDateOnly } from '@/lib/utils';
 import { toast } from 'sonner';
 import {
   Wallet, Plus, Pencil, Trash2, Loader2, RefreshCw, Search, X,
@@ -126,6 +126,11 @@ export default function AdminExpensesClient() {
     const params = new URLSearchParams();
     if (filters.from) params.set('from', filters.from);
     if (filters.to) params.set('to', filters.to);
+    // Forward ALL active filters so the exported CSV matches the on-screen
+    // table. Previously category + q were dropped, exporting rows the admin
+    // had filtered out.
+    if (filters.category) params.set('category', filters.category);
+    if (filters.q) params.set('q', filters.q);
     const token = getTabToken();
     const res = await fetch(`/api/expenses?${params.toString()}&limit=500`, {
       credentials: 'include', headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -236,7 +241,7 @@ export default function AdminExpensesClient() {
               <tbody className="divide-y divide-slate-100">
                 {items.map((it) => (
                   <tr key={it._id} className="hover:bg-slate-50">
-                    <td className="px-4 py-2.5 whitespace-nowrap">{formatDate(it.date)}</td>
+                    <td className="px-4 py-2.5 whitespace-nowrap">{formatDateOnly(it.date)}</td>
                     <td className="px-4 py-2.5"><span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs capitalize">{it.category}</span></td>
                     <td className="px-4 py-2.5">{it.description}</td>
                     <td className="px-4 py-2.5 text-gray-600">{it.vendor || '—'}</td>

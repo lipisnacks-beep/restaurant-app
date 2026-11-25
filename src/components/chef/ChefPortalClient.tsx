@@ -17,6 +17,7 @@ interface Order {
   _id: string; orderNumber: string; tableNumber: number;
   items: OrderItem[]; status: string; createdAt: string; customerName?: string; notes?: string;
   assignedAt?: string | null;  // when the dispatch engine routed this order to THIS chef
+  preparingAt?: string | null; // when the chef started cooking (for the Preparing column timer)
 }
 
 const RINGTONE_URL = '/sounds/new-order.wav';
@@ -367,7 +368,10 @@ function OrderCard({ order, accent, children, ringing }: {
           <p className="font-semibold text-gray-800">{order.orderNumber}</p>
           <p className="text-sm text-gray-600">Table {order.tableNumber}{order.customerName ? ` · ${order.customerName}` : ''}</p>
         </div>
-        <span className="text-xs text-gray-400">{timeAgo(order.createdAt)}</span>
+        {/* For a preparing order, "x ago" should reflect how long it's been
+            COOKING (preparingAt), not how long since the customer placed it
+            (createdAt). Pending orders show placement time. */}
+        <span className="text-xs text-gray-400">{timeAgo(order.status === 'preparing' ? (order.preparingAt || order.createdAt) : order.createdAt)}</span>
       </div>
       <ul className="mt-3 space-y-1.5">
         {order.items.map((i, idx) => (

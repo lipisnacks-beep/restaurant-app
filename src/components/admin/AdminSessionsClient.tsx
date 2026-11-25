@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '@/lib/apiClient';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, formatDate } from '@/lib/utils';
 import { Clock, Users, TrendingUp, Calendar, Loader2 } from 'lucide-react';
 
 interface SessionItem {
@@ -45,29 +45,52 @@ export default function AdminSessionsClient() {
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | 'active' | 'completed'>('all');
-  const [stats, setStats] = useState({ activeCount: 0, todaySessions: 0 });
+  // Server-side aggregates over ALL matching sessions (not the page-limited
+  // list), so the cards are accurate even with >100 sessions.
+  const [stats, setStats] = useState({
+    activeCount: 0,
+    todaySessions: 0,
+    sessionRevenue: 0,
+    sessionTips: 0,
+    finishedCount: 0,
+    avgOccupiedMs: 0,
+  });
 
   const load = useCallback(async () => {
-    const status = filter === 'all' ? 'all' : filter === 'active' ? 'active' : 'closed';
-    const { data, ok } = await api<{ sessions: SessionItem[]; activeCount: number; todaySessions: number }>(
-      `/api/sessions?status=${status}&limit=100`,
-    );
+    // "Finished" maps to the server's multi-status {paid,completed,closed}
+    // query so paid/completed sessions (functionally finished) show up —
+    // previously the client sent status='closed' and excluded them.
+    const status = filter === 'all' ? 'all' : filter === 'active' ? 'active' : 'finished';
+    const { data, ok } = await api<{
+      sessions: SessionItem[];
+      activeCount: number;
+      todaySessions: number;
+      sessionRevenue: number;
+      sessionTips: number;
+      finishedCount: number;
+      avgOccupiedMs: number;
+    }>(`/api/sessions?status=${status}&limit=100`);
     if (ok && data) {
       setSessions(data.sessions);
-      setStats({ activeCount: data.activeCount, todaySessions: data.todaySessions });
+      setStats({
+        activeCount: data.activeCount,
+        todaySessions: data.todaySessions,
+        sessionRevenue: data.sessionRevenue || 0,
+        sessionTips: data.sessionTips || 0,
+        finishedCount: data.finishedCount || 0,
+        avgOccupiedMs: data.avgOccupiedMs || 0,
+      });
     }
     setLoading(false);
   }, [filter]);
 
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
 
-  // Compute average occupied time over closed sessions.
-  const closedSessions = sessions.filter((s) => s.status === 'closed' || s.status === 'completed');
-  const avgOccupiedMs = closedSessions.length > 0
-    ? closedSessions.reduce((sum, s) => sum + s.occupiedMs, 0) / closedSessions.length
-    : 0;
-  const totalRevenue = closedSessions.reduce((sum, s) => sum + (s.total || 0), 0);
-  const totalTips = closedSessions.reduce((sum, s) => sum + (s.tip || 0), 0);
+  // Average occupied time + revenue/tips come from the server aggregates (over
+  // ALL finished sessions, not just the page-limited list).
+  const avgOccupiedMs = stats.avgOccupiedMs;
+  const totalRevenue = stats.sessionRevenue;
+  const totalTips = stats.sessionTips;
 
   return (
     <div className="space-y-6">
@@ -126,7 +149,7 @@ export default function AdminSessionsClient() {
                       <span className={`badge text-[10px] ${STATUS_BADGE[s.status]}`}>{s.status}</span>
                     </td>
                     <td className="px-4 py-3 text-gray-600 text-xs">
-                      {new Date(s.startedAt).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      {formatDate(s.startedAt)}
                     </td>
                     <td className="px-4 py-3 font-mono text-gray-700">
                       {formatDuration(s.occupiedMs)}
