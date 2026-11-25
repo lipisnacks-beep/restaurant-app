@@ -63,6 +63,8 @@ export default function AdminExpensesClient() {
       setTotal(0);
       if (status === 401) {
         toast.error('Your session has expired — please sign in again.');
+      } else if (status === 503) {
+        toast.error('Database is not configured on the server. Ask an admin to set MONGODB_URI, then reload.');
       } else if (error) {
         toast.error(`Could not load expenses: ${error}`);
       }

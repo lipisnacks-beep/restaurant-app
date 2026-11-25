@@ -100,3 +100,34 @@ export function forbidden(message = 'Forbidden'): Response {
     { status: 403, headers: { 'Cache-Control': 'no-store, max-age=0' } },
   );
 }
+
+/**
+ * Handler for an unexpected exception inside an API route.
+ *
+ * Without this, a thrown error (e.g. the DB not being configured, or a
+ * transient connection failure) becomes a bare HTTP 500 with an EMPTY body,
+ * which the client surfaces as the cryptic "Request failed (500)". Here we
+ * turn it into a real JSON error so the UI can show something actionable.
+ *
+ * A missing/unreachable database is reported as 503 (service unavailable) so
+ * it is distinguishable from a genuine server bug (500). The error message is
+ * passed through only in non-production; in production we return a generic
+ * message but still log the real cause server-side.
+ */
+export function serverError(err: unknown): Response {
+  const msg = err instanceof Error ? err.message : String(err);
+  const notConfigured = /MONGODB_URI is not configured/i.test(msg);
+  const status = notConfigured ? 503 : 500;
+  const safe =
+    process.env.NODE_ENV !== 'production'
+      ? msg
+      : notConfigured
+        ? 'Database is not configured. Set MONGODB_URI in the server environment.'
+        : 'Internal server error';
+  // eslint-disable-next-line no-console
+  console.error('[api] server error:', msg);
+  return Response.json(
+    { error: safe },
+    { status, headers: { 'Cache-Control': 'no-store, max-age=0' } },
+  );
+}
