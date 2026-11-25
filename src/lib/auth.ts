@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { Types } from 'mongoose';
@@ -67,16 +67,47 @@ function roleMatchesScope(role: Role, scope: Exclude<SessionScope, 'any'>): bool
 }
 
 /**
- * Server-side: read the session from the cookie for a specific scope.
+ * Server-side: read the session for a specific scope.
  *
- * - `scope='any'`: returns the first valid session found across all scoped
- *   cookies, falling back to the legacy shared cookie.
- * - `scope='admin'|'chef'|'staff'`: returns the session from that portal's
- *   cookie; if absent, accepts the legacy `rms_session` cookie only when its
- *   role matches the scope (so a stale shared cookie can't grant the wrong
- *   portal access).
+ * Auth sources, in priority order:
+ *   1. `Authorization: Bearer <token>` header — the per-tab identity stored in
+ *      sessionStorage by LoginCard and attached to every request by apiClient.
+ *      This is what keeps each browser tab tied to the user who signed in on
+ *      it, independent of the shared cookie. (Parity with
+ *      resolveSessionForRoles, which already does this.)
+ *   2. The scoped session cookie (rms_admin_session / rms_chef_session /
+ *      rms_staff_session) — the "is someone logged into this browser" gate.
+ *   3. The legacy shared `rms_session` cookie (fallback for old tokens).
+ *
+ * - `scope='any'`: returns the first valid session found (Bearer, then any
+ *   scoped cookie, then legacy).
+ * - `scope='admin'|'chef'|'staff'`: returns the session only if its role
+ *   matches the scope (admin can act as chef/staff).
+ *
+ * Before this, getSession() read ONLY cookies, so admin data routes
+ * (expenses, purchases, reports) returned 401 whenever the admin cookie
+ * wasn't sent (expired, cross-origin on Vercel preview domains, or the
+ * per-tab Bearer token being the only identity) — leaving the pages silently
+ * empty even though the data existed. Honoring the Bearer header here fixes
+ * that and keeps every route consistent.
  */
 export async function getSession(scope: SessionScope = 'any'): Promise<SessionPayload | null> {
+  // 1. Per-tab Bearer token (highest priority — identifies THIS tab's user).
+  try {
+    const h = await headers();
+    const authHeader = h.get('authorization');
+    if (authHeader?.startsWith('Bearer ')) {
+      const s = verifyToken(authHeader.slice(7));
+      if (s) {
+        if (scope === 'any' || roleMatchesScope(s.role, scope as Exclude<SessionScope, 'any'>)) {
+          return s;
+        }
+      }
+    }
+  } catch {
+    // headers() can throw in some non-request contexts; fall through to cookies.
+  }
+
   const store = await cookies();
 
   if (scope === 'any') {

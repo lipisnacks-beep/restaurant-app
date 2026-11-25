@@ -49,11 +49,23 @@ export default function AdminExpensesClient() {
     if (filters.q) params.set('q', filters.q);
     params.set('page', String(page));
     params.set('limit', String(limit));
-    const { data, ok } = await api<ListResp>(`/api/expenses?${params.toString()}`);
+    const { data, ok, error, status } = await api<ListResp>(`/api/expenses?${params.toString()}`);
     if (ok && data) {
       setItems(data.items);
       setGrandTotal(data.grandTotal);
       setTotal(data.total);
+    } else {
+      // Distinguish a real auth/load failure from genuinely empty data, so the
+      // page never silently shows "No expenses found" when the real problem is
+      // an expired session or a server error.
+      setItems([]);
+      setGrandTotal(0);
+      setTotal(0);
+      if (status === 401) {
+        toast.error('Your session has expired — please sign in again.');
+      } else if (error) {
+        toast.error(`Could not load expenses: ${error}`);
+      }
     }
     setLoading(false);
   }, [filters, page]);
