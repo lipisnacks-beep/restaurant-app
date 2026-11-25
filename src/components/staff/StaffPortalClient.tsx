@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, getTabUser, getTabToken, clearTabIdentity } from '@/lib/apiClient';
 import { toast } from 'sonner';
 import { timeAgo, formatCurrency } from '@/lib/utils';
+import { useBrand } from '@/components/ui/Brand';
 import {
   ConciergeBell, CheckCircle2, Loader2, LogOut, Bell, BellRing, Coins, Table2,
   Volume2, VolumeX, UserCog,
@@ -22,6 +23,9 @@ interface OccupiedTable {
   currentSession?: {
     sessionId: string; startedAt: string; customerName?: string;
     customerMobile?: string; sessionStatus?: 'active' | 'paid' | 'completed' | 'closed';
+    // The staff who served this table's customers (stringified ObjectId, or null).
+    // Used to gate the Free Table button: only this staff can free the table.
+    servedByStaffId?: string | null;
   } | null;
 }
 
@@ -32,9 +36,11 @@ const POLL_MS = 4000;
 
 export default function StaffPortalClient() {
   const router = useRouter();
+  const brand = useBrand();
   const [orders, setOrders] = useState<Order[]>([]);
   const [tables, setTables] = useState<OccupiedTable[]>([]);
-  const [tipsEarned, setTipsEarned] = useState(0);  // cumulative persisted tips
+  const [tipsAvailable, setTipsAvailable] = useState(0);  // withdrawable tips balance
+  const [myStaffId, setMyStaffId] = useState<string>('');  // this staff's _id (for free-table ownership)
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -120,7 +126,7 @@ export default function StaffPortalClient() {
     const [ordersRes, tablesRes, acctRes] = await Promise.all([
       api<{ orders: Order[] }>('/api/orders?role=staff&limit=50'),
       api<{ tables: OccupiedTable[] }>('/api/tables'),
-      api<{ user?: { tipsEarned?: number } }>('/api/staff/account'),
+      api<{ user?: { id?: string; _id?: string; tipsAvailable?: number } }>('/api/staff/account'),
     ]);
     if (ordersRes.ok && ordersRes.data) {
       const next = ordersRes.data.orders;
@@ -149,7 +155,9 @@ export default function StaffPortalClient() {
       setTables(tablesRes.data.tables.filter((t) => t.currentSession?.sessionId));
     }
     if (acctRes.ok && acctRes.data?.user) {
-      setTipsEarned(acctRes.data.user.tipsEarned || 0);
+      const u = acctRes.data.user;
+      setTipsAvailable(u.tipsAvailable ?? 0);
+      setMyStaffId(String(u.id || u._id || ''));
     }
     setLoading(false);
   }, [soundEnabled, soundMuted, playRingtone, stopRingtone]);
@@ -211,8 +219,19 @@ export default function StaffPortalClient() {
   const toAccept = orders.filter((o) => o.status === 'ready' && !o.acceptedAt);
   const toServe = orders.filter((o) => o.status === 'ready' && o.acceptedAt);
   const served = orders.filter((o) => o.status === 'served');
-  const tablesToFree = tables.filter((t) => t.currentSession?.sessionStatus === 'completed');
-  const tablesOccupied = tables.filter((t) => t.currentSession?.sessionStatus !== 'completed');
+  // "Ready to Free" = tables THIS staff served, where the customer has paid
+  // (sessionStatus 'paid' or 'completed'). Only the serving staff gets the
+  // Free Table button — tying the free action to whoever handed the food over.
+  const tablesToFree = tables.filter(
+    (t) =>
+      t.currentSession?.servedByStaffId &&
+      String(t.currentSession.servedByStaffId) === myStaffId &&
+      (t.currentSession?.sessionStatus === 'paid' || t.currentSession?.sessionStatus === 'completed'),
+  );
+  // "Occupied" = everything else with a session (not yet paid, or served by a
+  // different staff). These show read-only so this staff still has situational
+  // awareness of the floor, but no Free Table button.
+  const tablesOccupied = tables.filter((t) => !tablesToFree.includes(t));
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-emerald-50 to-gray-50">
@@ -222,11 +241,16 @@ export default function StaffPortalClient() {
       <header className="bg-gradient-to-r from-emerald-600 to-emerald-700 text-white sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <ConciergeBell className="w-6 h-6" />
+            {brand.logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={brand.logoUrl} alt={`${brand.restaurantName} logo`} className="w-6 h-6 rounded-md object-contain bg-white/95 p-0.5" />
+            ) : (
+              <ConciergeBell className="w-6 h-6" />
+            )}
             <div>
-              <h1 className="font-semibold leading-none">Staff Portal</h1>
+              <h1 className="font-semibold leading-none">{brand.restaurantName}</h1>
               <p className="text-xs text-emerald-100">
-                {staffName ? `Signed in as ${staffName}` : 'Service & delivery queue'}
+                Staff Portal{staffName ? ` · ${staffName}` : ''}
               </p>
             </div>
           </div>
@@ -240,7 +264,7 @@ export default function StaffPortalClient() {
               title="View & withdraw your tips"
               className="badge bg-amber-400/30 text-amber-50 hover:bg-amber-400/50 transition-colors"
             >
-              <Coins className="w-3 h-3 mr-1" /> {formatCurrency(tipsEarned)} tips
+              <Coins className="w-3 h-3 mr-1" /> {formatCurrency(tipsAvailable)} tips
             </Link>
             {soundEnabled && (
               <button
@@ -371,7 +395,7 @@ export default function StaffPortalClient() {
                   <Table2 className="w-4 h-4 text-emerald-500" /> Ready to Free ({tablesToFree.length})
                 </h2>
                 <p className="text-xs text-gray-500 mb-3">
-                  These customers have paid &amp; reviewed. Confirm the table is clear, then free it for the next guest.
+                  Tables you served where the customer has paid. Confirm the table is clear, then free it for the next guest.
                 </p>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {tablesToFree.map((t) => (
@@ -388,9 +412,19 @@ export default function StaffPortalClient() {
                   <Table2 className="w-4 h-4 text-amber-500" /> Occupied Tables ({tablesOccupied.length})
                 </h2>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {tablesOccupied.map((t) => (
-                    <TableCard key={t._id} table={t} busy={busy === t._id} onFree={() => freeTable(t)} />
-                  ))}
+                  {tablesOccupied.map((t) => {
+                    const iServed = !!t.currentSession?.servedByStaffId &&
+                      String(t.currentSession.servedByStaffId) === myStaffId;
+                    return (
+                      <TableCard
+                        key={t._id}
+                        table={t}
+                        busy={busy === t._id}
+                        onFree={() => freeTable(t)}
+                        canFree={iServed}
+                      />
+                    );
+                  })}
                 </div>
               </section>
             )}
@@ -409,8 +443,8 @@ export default function StaffPortalClient() {
   );
 }
 
-function TableCard({ table, busy, onFree, highlight }: {
-  table: OccupiedTable; busy: boolean; onFree: () => void; highlight?: boolean;
+function TableCard({ table, busy, onFree, highlight, canFree = true }: {
+  table: OccupiedTable; busy: boolean; onFree: () => void; highlight?: boolean; canFree?: boolean;
 }) {
   const cs = table.currentSession;
   const status = cs?.sessionStatus || 'active';
@@ -432,10 +466,16 @@ function TableCard({ table, busy, onFree, highlight }: {
       <p className="text-xs text-gray-400 mt-2">
         Seated {cs?.startedAt ? timeAgo(cs.startedAt) : '—'}
       </p>
-      <button onClick={onFree} disabled={busy} className={`w-full mt-3 ${highlight ? 'btn bg-emerald-600 text-white hover:bg-emerald-700' : 'btn-secondary'}`}>
-        {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-        Free Table
-      </button>
+      {canFree ? (
+        <button onClick={onFree} disabled={busy} className={`w-full mt-3 ${highlight ? 'btn bg-emerald-600 text-white hover:bg-emerald-700' : 'btn-secondary'}`}>
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+          Free Table
+        </button>
+      ) : (
+        <p className="text-[11px] text-gray-400 mt-3 italic">
+          Served by another staff — only they can free this table.
+        </p>
+      )}
     </div>
   );
 }

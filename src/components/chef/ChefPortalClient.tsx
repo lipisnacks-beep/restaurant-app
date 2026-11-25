@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { api, getTabUser, getTabToken, clearTabIdentity } from '@/lib/apiClient';
 import { toast } from 'sonner';
 import { timeAgo } from '@/lib/utils';
+import { useBrand } from '@/components/ui/Brand';
 import {
   ChefHat, Flame, CheckCircle2, Loader2, Clock, LogOut, Bell,
   BellRing, Volume2, VolumeX, UserCog,
@@ -25,6 +26,7 @@ const POLL_MS = 3000;
 
 export default function ChefPortalClient() {
   const router = useRouter();
+  const brand = useBrand();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -219,11 +221,16 @@ export default function ChefPortalClient() {
       <header className="bg-gradient-to-r from-rose-600 to-rose-700 text-white sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <ChefHat className="w-6 h-6" />
+            {brand.logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={brand.logoUrl} alt={`${brand.restaurantName} logo`} className="w-6 h-6 rounded-md object-contain bg-white/95 p-0.5" />
+            ) : (
+              <ChefHat className="w-6 h-6" />
+            )}
             <div>
-              <h1 className="font-semibold leading-none">Chef Portal</h1>
+              <h1 className="font-semibold leading-none">{brand.restaurantName}</h1>
               <p className="text-xs text-rose-100">
-                {chefName ? `Signed in as ${chefName}` : 'Live order kitchen display'}
+                Chef Portal{chefName ? ` · ${chefName}` : ''}
               </p>
             </div>
           </div>

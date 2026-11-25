@@ -1,7 +1,12 @@
 import Link from 'next/link';
-import { UtensilsCrossed, ShieldCheck, ChefHat, ConciergeBell, QrCode } from 'lucide-react';
+import { ShieldCheck, ChefHat, ConciergeBell, QrCode } from 'lucide-react';
+import Brand from '@/components/ui/Brand';
+import { getSettings } from '@/lib/settings';
 
-export default function Home() {
+export const dynamic = 'force-dynamic';
+
+export default async function Home() {
+  const brand = await getSettings();
   const panels = [
     { href: '/admin/login', title: 'Admin Panel', desc: 'Manage tables, menu, staff, orders & reviews', icon: ShieldCheck, color: 'bg-amber-100 text-amber-700' },
     { href: '/chef/login', title: 'Chef Panel', desc: 'Live order queue — cook & mark ready', icon: ChefHat, color: 'bg-rose-100 text-rose-700' },
@@ -13,11 +18,10 @@ export default function Home() {
     <main className="min-h-screen flex flex-col">
       <header className="bg-gradient-to-r from-brand-600 to-brand-700 text-white">
         <div className="max-w-5xl mx-auto px-4 py-12 flex items-center gap-3">
-          <UtensilsCrossed className="w-10 h-10" />
-          <div>
-            <h1 className="text-3xl font-bold">Lipi Snacks</h1>
-            <p className="text-brand-100">Restaurant / Cafe Management System</p>
-          </div>
+          <Brand iconSize="w-10 h-10" nameClassName="text-3xl font-bold leading-tight" onColor brand={brand} />
+        </div>
+        <div className="max-w-5xl mx-auto px-4 -mt-8">
+          <p className="text-brand-100">Restaurant / Cafe Management System</p>
         </div>
       </header>
 
@@ -57,7 +61,7 @@ export default function Home() {
       </section>
 
       <footer className="mt-auto border-t py-6 text-center text-xs text-gray-400">
-        © {new Date().getFullYear()} Lipi Snacks · Built with Next.js, MongoDB &amp; Cloudinary
+        © {new Date().getFullYear()} {brand.restaurantName} · Built with Next.js, MongoDB &amp; Cloudinary
       </footer>
     </main>
   );

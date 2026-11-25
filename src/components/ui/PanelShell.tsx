@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { api } from '@/lib/apiClient';
 import { cn } from '@/lib/utils';
-import { LogOut, Menu, X, UtensilsCrossed } from 'lucide-react';
+import Brand from '@/components/ui/Brand';
+import { LogOut, Menu, X } from 'lucide-react';
 
 export interface NavItem {
   href: string;
@@ -36,8 +37,8 @@ export default function PanelShell({ title, nav, accent, children }: PanelShellP
       {/* Sidebar (desktop) */}
       <aside className="hidden md:flex md:w-64 md:flex-col md:fixed md:inset-y-0 border-r bg-white">
         <div className={cn('flex items-center gap-2 px-5 h-16 text-white', accent)}>
-          <UtensilsCrossed className="w-6 h-6" />
-          <span className="font-semibold">{title}</span>
+          <Brand iconSize="w-6 h-6" nameClassName="leading-tight" onColor />
+          <span className="ml-auto text-[10px] uppercase tracking-wide opacity-80">{title}</span>
         </div>
         <nav className="flex-1 px-2 py-4 space-y-1 overflow-y-auto">
           {nav.map((item) => {
@@ -70,7 +71,7 @@ export default function PanelShell({ title, nav, accent, children }: PanelShellP
           <button onClick={() => setOpen(true)} className="p-1 -ml-1">
             <Menu className="w-6 h-6" />
           </button>
-          <span className="font-semibold">{title}</span>
+          <Brand iconSize="w-5 h-5" nameClassName="text-gray-800" />
         </div>
         <button onClick={logout} className="text-red-600">
           <LogOut className="w-5 h-5" />

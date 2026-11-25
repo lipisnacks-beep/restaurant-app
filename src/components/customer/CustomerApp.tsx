@@ -6,6 +6,7 @@ import { useCart } from '@/lib/cartStore';
 import type { CartItem } from '@/lib/cartStore';
 import { toast } from 'sonner';
 import { formatCurrency } from '@/lib/utils';
+import { useBrand } from '@/components/ui/Brand';
 import {
   ShoppingCart, Plus, Minus, Trash2, UtensilsCrossed, Loader2, CheckCircle2,
   Receipt, Banknote, QrCode, CreditCard, Star, ChevronLeft, ChefHat, ConciergeBell,
@@ -53,6 +54,7 @@ export default function CustomerApp() {
   const [hydrated, setHydrated] = useState(false);
 
   const cart = useCart();
+  const brand = useBrand();
   const [items, setItems] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<View>('register');
@@ -217,7 +219,7 @@ export default function CustomerApp() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center bg-gradient-to-br from-brand-50 to-amber-50">
         <QrCode className="w-16 h-16 text-brand-500 mb-4" />
-        <h1 className="text-2xl font-bold text-gray-800 mb-2">Welcome to Lipi Snacks</h1>
+        <h1 className="text-2xl font-bold text-gray-800 mb-2">Welcome to {brand.restaurantName}</h1>
         <p className="text-gray-600 max-w-md">
           Please scan the QR code on your table to open the menu. If you arrived here directly,
           ask a staff member to point you to a table QR.
@@ -241,9 +243,14 @@ export default function CustomerApp() {
       <header className="bg-gradient-to-r from-brand-600 to-brand-700 text-white sticky top-0 z-30">
         <div className="max-w-3xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <UtensilsCrossed className="w-6 h-6" />
+            {brand.logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={brand.logoUrl} alt={`${brand.restaurantName} logo`} className="w-6 h-6 rounded-md object-contain bg-white/95 p-0.5" />
+            ) : (
+              <UtensilsCrossed className="w-6 h-6" />
+            )}
             <div>
-              <h1 className="font-semibold leading-none">Lipi Snacks</h1>
+              <h1 className="font-semibold leading-none">{brand.restaurantName}</h1>
               <p className="text-xs text-brand-100">
                 Table {cart.tableNumber}
                 {customer ? ` · ${customer.name}` : ''}
@@ -317,6 +324,7 @@ export default function CustomerApp() {
 function RegisterView({ tableNumber, onRegister, placing }: {
   tableNumber: number; onRegister: (name: string, mobile: string) => void; placing: boolean;
 }) {
+  const brand = useBrand();
   const [name, setName] = useState('');
   const [mobile, setMobile] = useState('');
   const valid = name.trim().length >= 2 && /^[6-9]\d{9}$/.test(mobile.replace(/\D/g, ''));
@@ -325,9 +333,14 @@ function RegisterView({ tableNumber, onRegister, placing }: {
     <div className="min-h-screen bg-gradient-to-br from-amber-50 to-gray-50 flex flex-col">
       <header className="bg-gradient-to-r from-brand-600 to-brand-700 text-white">
         <div className="max-w-3xl mx-auto px-4 h-16 flex items-center gap-2">
-          <UtensilsCrossed className="w-6 h-6" />
+          {brand.logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={brand.logoUrl} alt={`${brand.restaurantName} logo`} className="w-6 h-6 rounded-md object-contain bg-white/95 p-0.5" />
+          ) : (
+            <UtensilsCrossed className="w-6 h-6" />
+          )}
           <div>
-            <h1 className="font-semibold leading-none">Lipi Snacks</h1>
+            <h1 className="font-semibold leading-none">{brand.restaurantName}</h1>
             <p className="text-xs text-brand-100">Table {tableNumber}</p>
           </div>
         </div>
@@ -369,12 +382,13 @@ function RegisterView({ tableNumber, onRegister, placing }: {
 }
 
 function ClosedView() {
+  const brand = useBrand();
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center bg-gradient-to-br from-emerald-50 to-gray-50">
       <CheckCircle2 className="w-16 h-16 text-emerald-500 mb-4" />
       <h1 className="text-2xl font-bold text-gray-800 mb-2">Thanks for visiting!</h1>
       <p className="text-gray-600 max-w-md">
-        Your dining session has ended. You may close this page now. We hope to see you again soon at Lipi Snacks!
+        Your dining session has ended. You may close this page now. We hope to see you again soon at {brand.restaurantName}!
       </p>
     </div>
   );
@@ -907,6 +921,7 @@ function PayView({ order, sessionOrders, tip, setTip, method, setMethod, paying,
 }
 
 function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: Order[] }) {
+  const brand = useBrand();
   const [rating, setRating] = useState(0);
   const [foodRating, setFoodRating] = useState(0);
   const [serviceRating, setServiceRating] = useState(0);
@@ -1092,7 +1107,7 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
           <div>
             <h3 className="font-semibold text-gray-800">All done!</h3>
             <p className="text-sm text-gray-500 mt-1">
-              Your session has ended and this page can be closed. We hope to see you again at Lipi Snacks!
+              Your session has ended and this page can be closed. We hope to see you again at {brand.restaurantName}!
             </p>
           </div>
           {/* The browser blocked automatic closing (common on QR-scanned tabs).

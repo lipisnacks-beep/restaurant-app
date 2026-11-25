@@ -1,6 +1,6 @@
 'use client';
 import PanelShell, { NavItem } from '@/components/ui/PanelShell';
-import { LayoutDashboard, Table2, UtensilsCrossed, Receipt, Users, Star, Clock } from 'lucide-react';
+import { LayoutDashboard, Table2, UtensilsCrossed, Receipt, Users, Star, Clock, Settings } from 'lucide-react';
 
 const nav: NavItem[] = [
   { href: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -10,6 +10,7 @@ const nav: NavItem[] = [
   { href: '/admin/sessions', label: 'Sessions', icon: Clock },
   { href: '/admin/staff', label: 'Staff & Chef', icon: Users },
   { href: '/admin/reviews', label: 'Reviews', icon: Star },
+  { href: '/admin/settings', label: 'Settings', icon: Settings },
 ];
 
 export default function AdminShell({ active, children }: { active: string; children: React.ReactNode }) {
