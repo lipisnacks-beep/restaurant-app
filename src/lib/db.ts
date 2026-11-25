@@ -14,6 +14,18 @@ if (!globalCache.mongoose) {
 }
 const cached = globalCache.mongoose;
 
+/** A DB connection (not configuration) failure — e.g. Atlas IP allowlist,
+ * network outage, or wrong credentials. Tagged so route handlers can report
+ * it as an actionable 503 instead of an opaque "Internal server error" 500. */
+export class DbConnectionError extends Error {
+  cause?: unknown;
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = 'DbConnectionError';
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
 async function dbConnect(): Promise<typeof mongoose> {
   if (cached.conn) return cached.conn;
   const MONGODB_URI = process.env.MONGODB_URI as string;
@@ -27,6 +39,10 @@ async function dbConnect(): Promise<typeof mongoose> {
   if (!cached.promise) {
     const opts: mongoose.ConnectOptions = {
       bufferCommands: false,
+      // Fail fast on a bad host/allowlist instead of hanging for the default
+      // 30s server-selection timeout (which the user experiences as a long
+      // spinner followed by a 500).
+      serverSelectionTimeoutMS: 5000,
     };
     cached.promise = mongoose.connect(MONGODB_URI, opts);
   }
@@ -36,7 +52,14 @@ async function dbConnect(): Promise<typeof mongoose> {
     // A failed connection attempt should not poison the cache — allow a retry
     // on the next request instead of permanently rejecting.
     cached.promise = null;
-    throw err;
+    // Wrap in a tagged error with an actionable hint. The most frequent real
+    // cause on serverless deploys (Vercel) is MongoDB Atlas blocking the
+    // platform's dynamic egress IP — so mention the IP allowlist explicitly.
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new DbConnectionError(
+      `Could not connect to MongoDB: ${reason}. If you are on a serverless host (Vercel), add the host's egress IP to your MongoDB Atlas Network Access allowlist (or allow 0.0.0.0/0 for testing), and verify MONGODB_URI credentials.`,
+      err,
+    );
   }
   return cached.conn;
 }

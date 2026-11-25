@@ -109,21 +109,34 @@ export function forbidden(message = 'Forbidden'): Response {
  * which the client surfaces as the cryptic "Request failed (500)". Here we
  * turn it into a real JSON error so the UI can show something actionable.
  *
- * A missing/unreachable database is reported as 503 (service unavailable) so
- * it is distinguishable from a genuine server bug (500). The error message is
- * passed through only in non-production; in production we return a generic
- * message but still log the real cause server-side.
+ * A database problem — either not configured, or unreachable (Atlas IP
+ * allowlist, wrong credentials, network outage) — is reported as 503
+ * (service unavailable) with an actionable message, so it is distinguishable
+ * from a genuine server bug (500). Internal details are hidden in production
+ * for non-DB errors, but DB errors always carry their actionable hint
+ * because the fix is on the user's side (env var / Atlas allowlist).
  */
 export function serverError(err: unknown): Response {
   const msg = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : '';
   const notConfigured = /MONGODB_URI is not configured/i.test(msg);
-  const status = notConfigured ? 503 : 500;
-  const safe =
-    process.env.NODE_ENV !== 'production'
-      ? msg
-      : notConfigured
-        ? 'Database is not configured. Set MONGODB_URI in the server environment.'
-        : 'Internal server error';
+  // DbConnectionError is thrown by dbConnect() for any connection failure
+  // (bad host, blocked IP, wrong creds, timeout). Mongoose also throws
+  // MongooseError / MongoServerSelectionError / MongoNetworkError for the
+  // same class of problem when a query runs before the connection is open.
+  const connectionFailure =
+    name === 'DbConnectionError' ||
+    /MongooseError|MongoServerSelectionError|MongoNetworkError|MongoServerError|querySrv ENOTFOUND|timed out|ECONNREFUSED|ENOTFOUND/i.test(msg);
+  const isDb = notConfigured || connectionFailure;
+  const status = isDb ? 503 : 500;
+  const safe = (() => {
+    if (process.env.NODE_ENV !== 'production') return msg;
+    if (notConfigured) return 'Database is not configured. Set MONGODB_URI in the server environment.';
+    if (connectionFailure) {
+      return 'Could not connect to the database. If this is a serverless deploy (Vercel), add its egress IP to your MongoDB Atlas Network Access allowlist (or 0.0.0.0/0 for testing) and verify MONGODB_URI credentials, then reload.';
+    }
+    return 'Internal server error';
+  })();
   // eslint-disable-next-line no-console
   console.error('[api] server error:', msg);
   return Response.json(
