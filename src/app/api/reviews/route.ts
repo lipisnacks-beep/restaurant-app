@@ -11,6 +11,7 @@ import {
   clearCustomerSessionCookie,
 } from '@/lib/auth';
 import { ok, fail } from '@/lib/utils';
+import { getSettings } from '@/lib/settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -87,7 +88,10 @@ export async function POST(req: NextRequest) {
   }
 
   // Provide the Google review URL so the frontend can redirect the customer.
-  const googleUrl = process.env.GOOGLE_REVIEW_URL || '';
+  // Prefer the admin-configured Settings value; fall back to the env var so
+  // existing deployments keep working.
+  const settings = await getSettings();
+  const googleUrl = settings.googleReviewUrl || process.env.GOOGLE_REVIEW_URL || '';
   const res = NextResponse.json({
     review,
     googleReviewUrl: googleUrl,

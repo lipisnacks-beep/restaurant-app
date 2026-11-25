@@ -6,13 +6,30 @@ export function cn(...inputs: ClassValue[]): string {
   return twMerge(clsx(inputs));
 }
 
-/** Format a number as Indian Rupee. */
-export function formatCurrency(amount: number, symbol = '₹'): string {
+/**
+ * Runtime currency symbol override. Set once by the customer app from the
+ * admin-configured Settings (currencySymbol) so every formatCurrency() call —
+ * including those inside sub-components that don't receive settings as a prop —
+ * uses the right symbol without threading it through every call site.
+ *
+ * Falls back to '₹' until set. Server-side renders (admin/staff/chef portals
+ * that call formatCurrency) keep the default unless they also call setCurrency.
+ */
+let runtimeCurrencySymbol = '₹';
+export function setCurrencySymbol(symbol: string): void {
+  const s = (symbol || '').trim();
+  if (s) runtimeCurrencySymbol = s;
+}
+
+/** Format a number as currency. Uses the runtime symbol override (set from
+ *  Settings) unless an explicit symbol is passed. */
+export function formatCurrency(amount: number, symbol?: string): string {
+  const sym = symbol ?? runtimeCurrencySymbol;
   const formatted = Number(amount || 0).toLocaleString('en-IN', {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   });
-  return `${symbol}${formatted}`;
+  return `${sym}${formatted}`;
 }
 
 /** Format an ISO date string to a short readable form. */

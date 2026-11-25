@@ -5,8 +5,9 @@ import { api } from '@/lib/apiClient';
 import { useCart } from '@/lib/cartStore';
 import type { CartItem } from '@/lib/cartStore';
 import { toast } from 'sonner';
-import { formatCurrency } from '@/lib/utils';
-import { useBrand } from '@/components/ui/Brand';
+import { formatCurrency, setCurrencySymbol } from '@/lib/utils';
+import { useSettings } from '@/components/ui/Brand';
+import type { RestaurantSettings } from '@/lib/settings';
 import {
   ShoppingCart, Plus, Minus, Trash2, UtensilsCrossed, Loader2, CheckCircle2,
   Receipt, Banknote, QrCode, CreditCard, Star, ChevronLeft, ChefHat, ConciergeBell,
@@ -54,7 +55,16 @@ export default function CustomerApp() {
   const [hydrated, setHydrated] = useState(false);
 
   const cart = useCart();
-  const brand = useBrand();
+  const settings = useSettings();
+  // Brand subset for the headers/welcome that read `brand`.
+  const brand = settings;
+  // Push the restaurant's tax + service charge rates into the cart so every
+  // order is billed with the admin-configured percentages (Settings tab).
+  useEffect(() => {
+    cart.setRates(settings.taxRate, settings.serviceChargeRate);
+    setCurrencySymbol(settings.currencySymbol);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.taxRate, settings.serviceChargeRate, settings.currencySymbol]);
   const [items, setItems] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<View>('register');
@@ -308,7 +318,7 @@ export default function CustomerApp() {
 
         {view === 'pay' && activeOrder && (
           <PayView order={activeOrder} sessionOrders={sessionOrders} tip={tip} setTip={setTip}
-            method={paymentMethod} setMethod={setPaymentMethod} paying={paying} onPay={pay} onBack={() => setView('tracking')} />
+            method={paymentMethod} setMethod={setPaymentMethod} paying={paying} onPay={pay} onBack={() => setView('tracking')} settings={settings} />
         )}
 
         {view === 'thankyou' && activeOrder && (
@@ -324,7 +334,7 @@ export default function CustomerApp() {
 function RegisterView({ tableNumber, onRegister, placing }: {
   tableNumber: number; onRegister: (name: string, mobile: string) => void; placing: boolean;
 }) {
-  const brand = useBrand();
+  const brand = useSettings();
   const [name, setName] = useState('');
   const [mobile, setMobile] = useState('');
   const valid = name.trim().length >= 2 && /^[6-9]\d{9}$/.test(mobile.replace(/\D/g, ''));
@@ -382,7 +392,7 @@ function RegisterView({ tableNumber, onRegister, placing }: {
 }
 
 function ClosedView() {
-  const brand = useBrand();
+  const brand = useSettings();
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center bg-gradient-to-br from-emerald-50 to-gray-50">
       <CheckCircle2 className="w-16 h-16 text-emerald-500 mb-4" />
@@ -835,9 +845,10 @@ function TrackingView({ session, orders, activeOrder, onOrderMore, onPay }: {
   );
 }
 
-function PayView({ order, sessionOrders, tip, setTip, method, setMethod, paying, onPay, onBack }: {
+function PayView({ order, sessionOrders, tip, setTip, method, setMethod, paying, onPay, onBack, settings }: {
   order: Order; sessionOrders: Order[]; tip: number; setTip: (n: number) => void;
   method: string; setMethod: (m: any) => void; paying: boolean; onPay: () => void; onBack: () => void;
+  settings: RestaurantSettings;
 }) {
   const tipOptions = [0, 10, 20, 50, 100];
   // Aggregate all payable orders for the bill preview.
@@ -847,6 +858,13 @@ function PayView({ order, sessionOrders, tip, setTip, method, setMethod, paying,
   const billService = payable.reduce((s, o) => s + o.serviceChargeAmount, 0);
   const billBase = billSubtotal + billTax + billService;
   const grandTotal = billBase + tip;
+
+  // Payment methods available to this customer — driven by admin Settings.
+  const methods = ([
+    { key: 'cash', label: 'Cash', icon: Banknote, on: settings.paymentMethods.cash },
+    { key: 'upi', label: 'UPI / GPay', icon: QrCode, on: settings.paymentMethods.upi },
+    { key: 'card', label: 'Card', icon: CreditCard, on: settings.paymentMethods.card },
+  ] as const).filter((p) => p.on);
 
   return (
     <div className="space-y-4">
@@ -874,22 +892,22 @@ function PayView({ order, sessionOrders, tip, setTip, method, setMethod, paying,
 
       <div className="card p-4">
         <h3 className="font-semibold text-gray-800 mb-3 text-sm">Choose payment method</h3>
-        <div className="grid grid-cols-3 gap-2">
-          {[
-            { key: 'cash', label: 'Cash', icon: Banknote },
-            { key: 'upi', label: 'UPI / GPay', icon: QrCode },
-            { key: 'card', label: 'Card', icon: CreditCard },
-          ].map((p) => (
-            <button key={p.key} onClick={() => setMethod(p.key)}
-              className={`p-3 rounded-lg border flex flex-col items-center gap-1 transition ${method === p.key ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-gray-200 text-gray-600'}`}>
-              <p.icon className="w-5 h-5" />
-              <span className="text-xs font-medium">{p.label}</span>
-            </button>
-          ))}
-        </div>
-        {method === 'upi' && (
+        {methods.length === 0 ? (
+          <p className="text-sm text-gray-500">No payment methods are configured. Please ask a staff member.</p>
+        ) : (
+          <div className={`grid gap-2 ${methods.length === 1 ? 'grid-cols-1' : methods.length === 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+            {methods.map((p) => (
+              <button key={p.key} onClick={() => setMethod(p.key)}
+                className={`p-3 rounded-lg border flex flex-col items-center gap-1 transition ${method === p.key ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-gray-200 text-gray-600'}`}>
+                <p.icon className="w-5 h-5" />
+                <span className="text-xs font-medium">{p.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {method === 'upi' && settings.upiId && (
           <div className="mt-3 p-3 bg-gray-50 rounded-lg text-center text-xs text-gray-500">
-            Pay via UPI/GPay to <strong className="text-gray-700">lipisnacks@upi</strong> and tap confirm. Show the staff your payment confirmation.
+            Pay via UPI/GPay to <strong className="text-gray-700">{settings.upiId}</strong> and tap confirm. Show the staff your payment confirmation.
           </div>
         )}
       </div>
@@ -921,7 +939,7 @@ function PayView({ order, sessionOrders, tip, setTip, method, setMethod, paying,
 }
 
 function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: Order[] }) {
-  const brand = useBrand();
+  const brand = useSettings();
   const [rating, setRating] = useState(0);
   const [foodRating, setFoodRating] = useState(0);
   const [serviceRating, setServiceRating] = useState(0);

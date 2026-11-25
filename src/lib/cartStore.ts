@@ -23,6 +23,9 @@ interface CartState {
   setSession: (s: string) => void;
   setCustomerName: (n: string) => void;
   setCustomerMobile: (m: string) => void;
+  /** Push the restaurant's tax + service charge rates (from Settings) into the
+   *  cart so every order is billed correctly. */
+  setRates: (taxRate: number, serviceChargeRate: number) => void;
   add: (item: CartItem) => void;
   remove: (id: string) => void;
   setQty: (id: string, qty: number) => void;
@@ -48,6 +51,8 @@ export const useCart = create<CartState>()(
       setSession: (s) => set({ sessionId: s }),
       setCustomerName: (n) => set({ customerName: n }),
       setCustomerMobile: (m) => set({ customerMobile: m }),
+      setRates: (taxRate, serviceChargeRate) =>
+        set({ taxRate: Number(taxRate) || 0, serviceChargeRate: Number(serviceChargeRate) || 0 }),
       add: (item) => {
         const items = [...get().items];
         const idx = items.findIndex((i) => i.menuItem === item.menuItem);

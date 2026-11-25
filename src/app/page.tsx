@@ -21,7 +21,7 @@ export default async function Home() {
           <Brand iconSize="w-10 h-10" nameClassName="text-3xl font-bold leading-tight" onColor brand={brand} />
         </div>
         <div className="max-w-5xl mx-auto px-4 -mt-8">
-          <p className="text-brand-100">Restaurant / Cafe Management System</p>
+          <p className="text-brand-100">{brand.tagline || 'Restaurant / Cafe Management System'}</p>
         </div>
       </header>
 
@@ -58,6 +58,36 @@ export default async function Home() {
             <li>The customer is redirected to Google Reviews to share their experience.</li>
           </ol>
         </div>
+
+        {(brand.phone || brand.email || brand.address) && (
+          <div className="mt-6 grid sm:grid-cols-2 gap-4">
+            <div className="card p-5">
+              <h3 className="font-semibold mb-3 text-gray-800">Visit us</h3>
+              <div className="text-sm text-gray-600 space-y-1">
+                {brand.address && <p>{brand.address}</p>}
+                {brand.phone && <p>Phone: {brand.phone}</p>}
+                {brand.email && <p>Email: {brand.email}</p>}
+              </div>
+            </div>
+            <div className="card p-5">
+              <h3 className="font-semibold mb-3 text-gray-800">Opening hours</h3>
+              <div className="text-sm text-gray-600 space-y-0.5">
+                {([
+                  ['Mon', brand.hours.mon], ['Tue', brand.hours.tue], ['Wed', brand.hours.wed],
+                  ['Thu', brand.hours.thu], ['Fri', brand.hours.fri], ['Sat', brand.hours.sat],
+                  ['Sun', brand.hours.sun],
+                ] as const).map(([day, h]) => (
+                  <div key={day} className="flex justify-between">
+                    <span>{day}</span>
+                    <span className={h.open && h.close ? '' : 'text-red-500'}>
+                      {h.open && h.close ? `${h.open} – ${h.close}` : 'Closed'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       <footer className="mt-auto border-t py-6 text-center text-xs text-gray-400">

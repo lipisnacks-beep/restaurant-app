@@ -3,36 +3,45 @@
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/apiClient';
 import { UtensilsCrossed } from 'lucide-react';
+import {
+  DEFAULT_SETTINGS,
+  type BrandSettings,
+  type RestaurantSettings,
+} from '@/lib/settings';
+
+// Re-export the shared types so existing imports (`from '@/components/ui/Brand'`)
+// keep working without a second source of truth.
+export type { BrandSettings, RestaurantSettings };
+
+const FALLBACK_SETTINGS: RestaurantSettings = {
+  ...DEFAULT_SETTINGS,
+  hours: { ...DEFAULT_SETTINGS.hours },
+};
 
 /**
- * Public brand settings (restaurant name + logo). Fetched once from
- * /api/settings (public, cached server-side) and reused across every portal
- * header so the brand is dynamic and editable from the admin Settings tab.
+ * Hook: load the FULL restaurant settings once on mount. Returns the cached
+ * defaults synchronously on first render (so headers don't flash empty) and
+ * the real value as soon as the fetch resolves.
  */
-export interface BrandSettings {
-  restaurantName: string;
-  logoUrl: string | null;
-}
-
-const FALLBACK: BrandSettings = { restaurantName: 'Lipi Snacks', logoUrl: null };
-
-/**
- * Hook: load brand settings once on mount. Returns the cached fallback
- * synchronously on first render (so headers don't flash empty) and the real
- * value as soon as the fetch resolves.
- */
-export function useBrand(): BrandSettings {
-  const [brand, setBrand] = useState<BrandSettings>(FALLBACK);
+export function useSettings(): RestaurantSettings {
+  const [settings, setSettings] = useState<RestaurantSettings>(FALLBACK_SETTINGS);
   useEffect(() => {
     let active = true;
-    api<BrandSettings>('/api/settings').then(({ data, ok }) => {
-      if (active && ok && data) {
-        setBrand({ restaurantName: data.restaurantName || 'Lipi Snacks', logoUrl: data.logoUrl || null });
-      }
+    api<RestaurantSettings>('/api/settings').then(({ data, ok }) => {
+      if (active && ok && data) setSettings(data);
     });
     return () => { active = false; };
   }, []);
-  return brand;
+  return settings;
+}
+
+/**
+ * Hook: load only the brand (name + logo) — a thin wrapper around useSettings
+ * for components that render just the brand mark.
+ */
+export function useBrand(): BrandSettings {
+  const s = useSettings();
+  return { restaurantName: s.restaurantName, logoUrl: s.logoUrl };
 }
 
 interface BrandProps {

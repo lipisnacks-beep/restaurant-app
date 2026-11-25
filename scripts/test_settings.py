@@ -130,7 +130,64 @@ raw = str(b.get("_raw", ""))
 # Currently name is "YYY...Y" (60 Y's). Verify the home page shows the dynamic name.
 check("Y" * 60 in raw, "home page shows the dynamic restaurant name")
 
-print("\n=== 9. Restore original brand ===")
+print("\n=== 9. Comprehensive fields (contact, billing, hours, payments, links) ===")
+# Set a name back to something sane first.
+req(admin, "/api/settings", "PUT", {"restaurantName": "Sunrise Bistro", "tagline": "Fresh food, fast."})
+payload = {
+    "phone": "+91 98765 43210",
+    "email": "hello@sunrise.com",
+    "address": "12 MG Road, Bengaluru 560001",
+    "currencySymbol": "$",
+    "taxRate": 5,
+    "serviceChargeRate": 10,
+    "hours": {
+        "mon": {"open": "08:00", "close": "22:00"},
+        "sun": {"open": "", "close": ""},  # closed Sunday
+    },
+    "paymentMethods": {"cash": True, "upi": True, "card": False},
+    "upiId": "sunrise@upi",
+    "googleReviewUrl": "https://g.page/r/example",
+    "websiteUrl": "https://sunrise.example",
+    "instagramUrl": "https://instagram.com/sunrise",
+    "facebookUrl": "",
+}
+s, b = req(admin, "/api/settings", "PUT", payload)
+check(s == 200, f"comprehensive PUT accepted (status {s})")
+# Verify each field round-trips through a public GET.
+s, b = req(make_jar(), "/api/settings")
+check(b.get("phone") == "+91 98765 43210", f"phone round-trips (got {b.get('phone')!r})")
+check(b.get("email") == "hello@sunrise.com", f"email round-trips (got {b.get('email')!r})")
+check(b.get("currencySymbol") == "$", f"currency symbol is '$' (got {b.get('currencySymbol')!r})")
+check(b.get("taxRate") == 5, f"taxRate is 5 (got {b.get('taxRate')!r})")
+check(b.get("serviceChargeRate") == 10, f"serviceChargeRate is 10 (got {b.get('serviceChargeRate')!r})")
+check(b.get("hours", {}).get("mon", {}).get("open") == "08:00", "Mon hours persisted")
+check(b.get("hours", {}).get("sun", {}).get("open") == "", "Sun closed (empty open)")
+pm = b.get("paymentMethods", {})
+check(pm.get("cash") is True and pm.get("upi") is True and pm.get("card") is False, "payment methods respected")
+check(b.get("upiId") == "sunrise@upi", f"upiId round-trips (got {b.get('upiId')!r})")
+check(b.get("googleReviewUrl") == "https://g.page/r/example", "google review url persisted")
+check(b.get("tagline") == "Fresh food, fast.", "tagline persisted")
+
+print("\n=== 10. Billing validation ===")
+s, b = req(admin, "/api/settings", "PUT", {"taxRate": 150})
+check(s == 422, f"taxRate > 100 rejected (status {s})")
+s, b = req(admin, "/api/settings", "PUT", {"serviceChargeRate": -5})
+check(s == 422, f"negative serviceChargeRate rejected (status {s})")
+s, b = req(admin, "/api/settings", "PUT", {"currencySymbol": ""})
+check(s == 422, f"empty currency symbol rejected (status {s})")
+s, b = req(admin, "/api/settings", "PUT", {"hours": {"mon": {"open": "25:00", "close": "22:00"}}})
+check(s == 422, f"invalid time rejected (status {s})")
+s, b = req(admin, "/api/settings", "PUT", {"paymentMethods": {"cash": False, "upi": False, "card": False}})
+check(s == 422, f"all payment methods disabled rejected (status {s})")
+
+print("\n=== 11. Reviews route returns settings googleReviewUrl ===")
+# Reviews POST requires a customer session; just confirm the settings value is
+# reachable by checking GET includes it (already done in §9). Also verify the
+# reviews endpoint exists and is gated.
+s, b = req(make_jar(), "/api/reviews", "POST", {})
+check(s in (400, 401, 422), f"reviews POST without session rejected (status {s})")
+
+print("\n=== 12. Restore original brand ===")
 s, b = req(admin, "/api/settings", "PUT", {"restaurantName": original_name, "logoUrl": original_logo})
 check(s == 200, f"restored original brand (status {s})")
 s, b = req(make_jar(), "/api/settings")
