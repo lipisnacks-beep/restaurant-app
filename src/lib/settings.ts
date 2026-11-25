@@ -1,76 +1,24 @@
 import dbConnect from '@/lib/db';
 import Settings from '@/models/Settings';
-
-/**
- * Full restaurant settings shape returned by getSettings() / GET /api/settings.
- * This is the single source of truth for everything the admin can tune; every
- * public page render and portal reads from here (cached server-side).
- *
- * `BrandSettings` (name + logo) is kept as a subset for the few components that
- * only care about the brand mark.
- */
-export interface HoursDay { open: string; close: string }
-export type DayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
-
-export interface RestaurantSettings {
-  // Brand
-  restaurantName: string;
-  tagline: string;
-  logoUrl: string | null;
-  // Contact
-  phone: string;
-  email: string;
-  address: string;
-  // Billing policy
-  currencySymbol: string;
-  taxRate: number;
-  serviceChargeRate: number;
-  // Operating hours
-  hours: Record<DayKey, HoursDay>;
-  // Payment methods
-  paymentMethods: { cash: boolean; upi: boolean; card: boolean };
-  upiId: string;
-  // External links
-  googleReviewUrl: string;
-  websiteUrl: string;
-  instagramUrl: string;
-  facebookUrl: string;
-}
-
-/** Subset for components that only render the brand mark (logo + name). */
-export interface BrandSettings {
-  restaurantName: string;
-  logoUrl: string | null;
-}
-
-const DEFAULT_HOURS: Record<DayKey, HoursDay> = {
-  mon: { open: '09:00', close: '22:00' },
-  tue: { open: '09:00', close: '22:00' },
-  wed: { open: '09:00', close: '22:00' },
-  thu: { open: '09:00', close: '22:00' },
-  fri: { open: '09:00', close: '23:00' },
-  sat: { open: '09:00', close: '23:00' },
-  sun: { open: '10:00', close: '22:00' },
-};
-
-export const DEFAULT_SETTINGS: RestaurantSettings = {
-  restaurantName: 'Lipi Snacks',
-  tagline: 'Restaurant / Cafe Management System',
-  logoUrl: null,
-  phone: '',
-  email: '',
-  address: '',
-  currencySymbol: '₹',
-  taxRate: 0,
-  serviceChargeRate: 0,
-  hours: DEFAULT_HOURS,
-  paymentMethods: { cash: true, upi: true, card: true },
-  upiId: '',
-  googleReviewUrl: '',
-  websiteUrl: '',
-  instagramUrl: '',
-  facebookUrl: '',
-};
+// Re-export the pure TS types + defaults so existing imports
+// (`from '@/lib/settings'`) keep working. Client components should import the
+// types/defaults from '@/lib/settings.types' directly to avoid pulling
+// mongoose/dbConnect into the browser bundle.
+export {
+  DEFAULT_SETTINGS,
+  DEFAULT_HOURS,
+  type RestaurantSettings,
+  type BrandSettings,
+  type HoursDay,
+  type DayKey,
+} from '@/lib/settings.types';
+import {
+  DEFAULT_SETTINGS,
+  DEFAULT_HOURS,
+  type RestaurantSettings,
+  type DayKey,
+  type HoursDay,
+} from '@/lib/settings.types';
 
 // Cache the settings for a short window (5 minutes) so repeated renders don't
 // each open a Mongo connection. In dev (next dev) module cache can be wiped on
@@ -113,9 +61,9 @@ function normalize(raw: Partial<RestaurantSettings> | null): RestaurantSettings 
  * Read the singleton site-wide restaurant settings. Falls back to defaults if
  * no document exists yet (e.g. fresh install).
  *
- * Safe to call from server components and API routes. Returns a plain object
- * (never a mongoose doc) so it can be passed to client components as a prop
- * without leaking the full document prototype.
+ * SERVER-ONLY. Safe to call from server components and API routes. Returns a
+ * plain object (never a mongoose doc) so it can be passed to client components
+ * as a prop without leaking the full document prototype.
  */
 export async function getSettings(): Promise<RestaurantSettings> {
   if (cache && Date.now() - cache.at < TTL_MS) return cache.value;

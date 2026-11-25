@@ -7,7 +7,7 @@ import type { CartItem } from '@/lib/cartStore';
 import { toast } from 'sonner';
 import { formatCurrency, setCurrencySymbol } from '@/lib/utils';
 import { useSettings } from '@/components/ui/Brand';
-import type { RestaurantSettings } from '@/lib/settings';
+import type { RestaurantSettings } from '@/lib/settings.types';
 import {
   ShoppingCart, Plus, Minus, Trash2, UtensilsCrossed, Loader2, CheckCircle2,
   Receipt, Banknote, QrCode, CreditCard, Star, ChevronLeft, ChefHat, ConciergeBell,

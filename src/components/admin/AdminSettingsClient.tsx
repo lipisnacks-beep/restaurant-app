@@ -6,7 +6,7 @@ import {
   Save, Upload, Loader2, Trash2, ImageIcon, Store, Phone, Mail, MapPin,
   Receipt, Percent, Coins, Clock, CreditCard, Link2, Check, CalendarDays,
 } from 'lucide-react';
-import type { RestaurantSettings, DayKey } from '@/lib/settings';
+import type { RestaurantSettings, DayKey } from '@/lib/settings.types';
 
 interface Props {
   initialSettings: RestaurantSettings;

@@ -7,7 +7,7 @@ import {
   DEFAULT_SETTINGS,
   type BrandSettings,
   type RestaurantSettings,
-} from '@/lib/settings';
+} from '@/lib/settings.types';
 
 // Re-export the shared types so existing imports (`from '@/components/ui/Brand'`)
 // keep working without a second source of truth.
