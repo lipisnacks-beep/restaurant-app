@@ -405,12 +405,16 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         // without marking the order served, the customer then pays, and the
         // table used to stay UNCLAIMED — which made the Free Table option
         // appear in EVERY staff account instead of only the actual serving
-        // staff's. Attribute to the dispatch-assigned staff of the paid
-        // orders (never overwrite a more accurate stamp from a real serve).
-        const sessionStaffIds = sessionOrders
-          .map((o) => o.staffId)
-          .filter((id) => !!id);
-        if (sessionStaffIds.length > 0) {
+        // staff's. Prefer a staff who actually delivered (servedAt set, most
+        // recent serve wins — matching the serve-tap overwrite semantics);
+        // fall back to the dispatch-assigned staff of the paid orders. Never
+        // overwrites a more accurate stamp from a real serve tap.
+        const ordersWithStaff = sessionOrders.filter((o) => o.staffId);
+        const actuallyServed = ordersWithStaff.filter((o) => o.servedAt);
+        const attributionStaffId = actuallyServed.length
+          ? actuallyServed[actuallyServed.length - 1].staffId
+          : ordersWithStaff[0]?.staffId;
+        if (attributionStaffId) {
           await Table.updateOne(
             {
               $or: [
@@ -420,7 +424,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
               'currentSession.sessionId': { $exists: true, $ne: '' },
               'currentSession.servedByStaffId': null,
             },
-            { $set: { 'currentSession.servedByStaffId': sessionStaffIds[0] } },
+            { $set: { 'currentSession.servedByStaffId': attributionStaffId } },
           );
         }
       }

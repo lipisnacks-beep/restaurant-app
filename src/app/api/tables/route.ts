@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import Table from '@/models/Table';
 import CustomerSession from '@/models/CustomerSession';
+import Order from '@/models/Order';
 import { getSession } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden, serverError } from '@/lib/utils';
 import { buildTableQrUrl } from '@/lib/publicUrl';
@@ -32,6 +33,37 @@ export async function GET(req: NextRequest) {
           .lean()
       : [];
     const liveStatusBySession = new Map(liveSessions.map((s: any) => [s.sessionId, s.status]));
+
+    // Self-heal legacy UNCLAIMED sessions: sessions created before the
+    // attribution fixes (serve / pay / complete stamping) have no recorded
+    // server. Under the strict ownership rule an unclaimed session is
+    // invisible to unrelated staff, so backfill the server from the
+    // session's orders (most recent actual server, else dispatch-assigned
+    // staff) — same precedence as the pay-time fix. Only unclaimed sessions
+    // cost an extra query, and each is healed once.
+    const unclaimed = tables.filter(
+      (t: any) => t.currentSession?.sessionId && !t.currentSession.servedByStaffId,
+    );
+    if (unclaimed.length > 0) {
+      for (const t of unclaimed) {
+        const sessionOrders = await Order.find({ sessionId: t.currentSession.sessionId })
+          .select('staffId servedAt')
+          .sort({ createdAt: 1 })
+          .lean();
+        const servedOrders = sessionOrders.filter((o: any) => o.staffId && o.servedAt);
+        const attribution =
+          servedOrders.length > 0
+            ? servedOrders[servedOrders.length - 1].staffId
+            : sessionOrders.find((o: any) => o.staffId)?.staffId;
+        if (attribution) {
+          await Table.updateOne(
+            { _id: t._id, 'currentSession.servedByStaffId': null },
+            { $set: { 'currentSession.servedByStaffId': attribution } },
+          );
+          t.currentSession.servedByStaffId = String(attribution);
+        }
+      }
+    }
 
     const withQr = tables.map((t: any) => {
       const cs = t.currentSession;

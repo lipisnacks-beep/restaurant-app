@@ -25,10 +25,11 @@ export const dynamic = 'force-dynamic';
  *
  * Ownership gate — a non-admin staff may free the table if ANY of:
  *   1. They are the recorded serving staff (table.currentSession.servedByStaffId).
- *   2. No serving staff was recorded (admin-served unrouted order, legacy/seed
- *      order without a `table` ref, or pre-feature data) — any staff may claim
- *      it, otherwise the table could NEVER be freed by staff and would sit
- *      occupied until an admin intervened.
+ *   2. No serving staff was recorded AND the session's orders were assigned to
+ *      them by dispatch (any order status) — never unrelated staff accounts:
+ *      the Free option must show only for the staff actually attached to the
+ *      customer's table session. Sessions with no assigned staff at all are
+ *      admin-only.
  *   3. They served ANY order in this dining session (Order.sessionId match) —
  *      covers multi-staff tables where the recorded server is only the LAST
  *      person who delivered, and legacy orders whose serve action couldn't
@@ -59,23 +60,38 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       const isRecordedServer = !!servedBy && String(servedBy) === String(session.userId);
       const isUnclaimed = !servedBy;
 
-      let servedInSession = false;
-      if (!isRecordedServer && !isUnclaimed) {
+      if (!isRecordedServer && isUnclaimed) {
+        // No server recorded (admin-served unrouted order / legacy data /
+        // orders placed while no staff was online). STRICT ownership: the
+        // Free option must never appear in unrelated staff accounts — only a
+        // staff member the session's orders were actually assigned to
+        // (dispatch) may free it. Everyone else is read-only; admin can
+        // always force-free.
+        const assignedToMe =
+          (await Order.exists({
+            sessionId: currentSessionId,
+            staffId: session.userId,
+          })) != null;
+        if (!assignedToMe) {
+          return forbidden(
+            'No server is recorded for this table session — only the assigned staff or an admin can free it.',
+          );
+        }
+      } else if (!isRecordedServer) {
         // Rule 3: did THIS staff serve any order for this dining session?
         // (Multi-staff tables, and orders whose serve couldn't stamp the table
         // because the legacy order doc had no `table` reference.)
-        servedInSession =
+        const servedInSession =
           (await Order.countDocuments({
             sessionId: currentSessionId,
             staffId: session.userId,
             status: { $in: ['served', 'completed'] },
           })) > 0;
-      }
-
-      if (!isRecordedServer && !isUnclaimed && !servedInSession) {
-        return forbidden(
-          'You did not serve this table — only the staff who served it can free it.',
-        );
+        if (!servedInSession) {
+          return forbidden(
+            'You did not serve this table — only the staff who served it can free it.',
+          );
+        }
       }
     }
 

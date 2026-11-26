@@ -241,22 +241,34 @@ export default function StaffPortalClient() {
     orders.filter((o) => o.status === 'served' && o.sessionId).map((o) => o.sessionId as string),
   );
 
+  // Dining sessions where THIS staff has ANY assigned order (dispatch-routed
+  // ready or served orders). Used for unclaimed sessions: only staff actually
+  // attached to the session may free it — never unrelated staff accounts.
+  const myAssignedSessionIds = new Set(
+    orders.filter((o) => o.sessionId).map((o) => o.sessionId as string),
+  );
+
   /**
-   * Can THIS staff free the given occupied table? Mirrors the API gate:
+   * Can THIS staff free the given occupied table? Mirrors the API gate —
+   * STRICT ownership: the Free Table option must only appear for the staff
+   * attached to this customer's session, never for the whole team.
    *   1. recorded server (servedByStaffId) is me, in ANY session state —
    *      active too (customer may settle cash at the counter without using
    *      the in-app pay screen; previously the button was hidden then and the
    *      staff had NO way to free the table they served);
-   *   2. no server recorded (admin-served unrouted order / legacy data) — any
-   *      staff may free it, otherwise nobody could;
-   *   3. I served any order in this dining session.
+   *   2. recorded server is someone else — only co-servers of the session;
+   *   3. no server recorded — only staff the session's orders were assigned
+   *      to (dispatch); sessions with no assigned staff are admin-only.
    */
   const canFreeTable = (t: OccupiedTable): boolean => {
     const cs = t.currentSession;
     if (!cs?.sessionId) return false;
-    if (!cs.servedByStaffId) return true; // unclaimed — any staff may free
-    if (String(cs.servedByStaffId) === myStaffId) return true; // my table
-    return myServedSessionIds.has(cs.sessionId); // I served part of this session
+    if (cs.servedByStaffId) {
+      if (String(cs.servedByStaffId) === myStaffId) return true; // my table
+      return myServedSessionIds.has(cs.sessionId); // I served part of this session
+    }
+    // Unclaimed: only staff the session's orders were assigned to.
+    return myAssignedSessionIds.has(cs.sessionId);
   };
 
   return (
@@ -500,13 +512,17 @@ function TableCard({ table, busy, onFree, highlight, canFree = true }: {
           </button>
           {!cs?.servedByStaffId && (
             <p className="text-[11px] text-gray-400 mt-1.5 italic">
-              Unclaimed session — no server recorded, any staff can free it.
+              Unclaimed session — no server recorded yet, you are handling this table.
             </p>
           )}
         </>
-      ) : (
+      ) : cs?.servedByStaffId ? (
         <p className="text-[11px] text-gray-400 mt-3 italic">
           Served by another staff — only they can free this table.
+        </p>
+      ) : (
+        <p className="text-[11px] text-gray-400 mt-3 italic">
+          No server recorded for this session — only the assigned staff or an admin can free it.
         </p>
       )}
     </div>
