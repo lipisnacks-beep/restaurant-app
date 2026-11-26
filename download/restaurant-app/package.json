@@ -1,0 +1,48 @@
+{
+  "name": "restaurant-management-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Full-stack restaurant/cafe management system with admin, chef, staff and customer panels",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
+    "axios": "1.7.2",
+    "bcryptjs": "2.4.3",
+    "cloudinary": "2.4.0",
+    "clsx": "2.1.1",
+    "date-fns": "3.6.0",
+    "jsonwebtoken": "9.0.2",
+    "lucide-react": "0.408.0",
+    "mongoose": "8.5.1",
+    "next": "^14.2.5",
+    "pdf-lib": "^1.17.1",
+    "qrcode": "1.5.4",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "sonner": "1.5.0",
+    "tailwind-merge": "2.4.0",
+    "xlsx": "^0.18.5",
+    "zustand": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "2.4.6",
+    "@types/jsonwebtoken": "9.0.6",
+    "@types/node": "20.14.10",
+    "@types/qrcode": "1.5.5",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "autoprefixer": "10.4.19",
+    "dotenv": "^18.0.10",
+    "eslint": "8.57.0",
+    "eslint-config-next": "14.2.5",
+    "postcss": "8.4.39",
+    "tailwindcss": "3.4.6",
+    "tsx": "4.16.2",
+    "typescript": "5.5.3"
+  }
+}
