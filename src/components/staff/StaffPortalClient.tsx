@@ -493,10 +493,17 @@ function TableCard({ table, busy, onFree, highlight, canFree = true }: {
         Seated {cs?.startedAt ? timeAgo(cs.startedAt) : '—'}
       </p>
       {canFree ? (
-        <button onClick={onFree} disabled={busy} className={`w-full mt-3 ${highlight ? 'btn bg-emerald-600 text-white hover:bg-emerald-700' : 'btn-secondary'}`}>
-          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-          Free Table
-        </button>
+        <>
+          <button onClick={onFree} disabled={busy} className={`w-full mt-3 ${highlight ? 'btn bg-emerald-600 text-white hover:bg-emerald-700' : 'btn-secondary'}`}>
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+            Free Table
+          </button>
+          {!cs?.servedByStaffId && (
+            <p className="text-[11px] text-gray-400 mt-1.5 italic">
+              Unclaimed session — no server recorded, any staff can free it.
+            </p>
+          )}
+        </>
       ) : (
         <p className="text-[11px] text-gray-400 mt-3 italic">
           Served by another staff — only they can free this table.

@@ -234,6 +234,24 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       order.status = 'completed';
       order.completedAt = new Date();
       await order.save();
+      // Attribute the table to the serving staff if the dining session is
+      // still unclaimed (e.g. the order was completed without an explicit
+      // serve tap). Prefer the dispatch-assigned staff; fall back to the
+      // completing staff member. Never overwrite an existing stamp.
+      const attribution = order.staffId || (session.role === 'staff' ? session.userId : null);
+      if (attribution) {
+        await Table.updateOne(
+          {
+            $or: [
+              ...(order.table ? [{ _id: order.table }] : []),
+              { number: order.tableNumber },
+            ],
+            'currentSession.sessionId': { $exists: true, $ne: '' },
+            'currentSession.servedByStaffId': null,
+          },
+          { $set: { 'currentSession.servedByStaffId': attribution } },
+        );
+      }
       return ok({ order });
     }
     case 'cancel': {
@@ -381,6 +399,30 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
           { _id: order.table },
           { $set: { 'currentSession.sessionStatus': 'paid' } },
         );
+
+        // Attribute the table session to the serving staff even when the
+        // "serve" tap never happened: production staff often deliver the food
+        // without marking the order served, the customer then pays, and the
+        // table used to stay UNCLAIMED — which made the Free Table option
+        // appear in EVERY staff account instead of only the actual serving
+        // staff's. Attribute to the dispatch-assigned staff of the paid
+        // orders (never overwrite a more accurate stamp from a real serve).
+        const sessionStaffIds = sessionOrders
+          .map((o) => o.staffId)
+          .filter((id) => !!id);
+        if (sessionStaffIds.length > 0) {
+          await Table.updateOne(
+            {
+              $or: [
+                ...(order.table ? [{ _id: order.table }] : []),
+                { number: order.tableNumber },
+              ],
+              'currentSession.sessionId': { $exists: true, $ne: '' },
+              'currentSession.servedByStaffId': null,
+            },
+            { $set: { 'currentSession.servedByStaffId': sessionStaffIds[0] } },
+          );
+        }
       }
 
       // If no other unpaid orders remain for this table session, the table is
