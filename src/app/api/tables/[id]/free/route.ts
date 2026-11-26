@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import dbConnect from '@/lib/db';
 import Table from '@/models/Table';
 import CustomerSession from '@/models/CustomerSession';
+import Order from '@/models/Order';
 import { resolveSessionForRoles } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden, serverError } from '@/lib/utils';
 
@@ -17,15 +18,22 @@ export const dynamic = 'force-dynamic';
  *   - Clears the table's currentSession so it shows as Free in the admin panel.
  *
  * This is intentionally a separate action from "complete order": staff should
- * only free the table once the customers have physically left. The customer's
- * payment+review may already be done (session status 'completed') or, in rare
- * cases, still pending (admin can force-free).
+ * only free the table once the customers have physically left — regardless of
+ * whether the customer paid through the app (session 'paid'/'completed') or
+ * settled cash at the counter without touching the pay screen (session still
+ * 'active'). The UI confirms before freeing either way.
  *
- * Ownership gate: only the staff who SERVED this table's customers
- * (table.currentSession.servedByStaffId) may free it. The customer's payment
- * flows to whoever physically brought the food, so the free-table action does
- * too. Admin can always force-free. If no servedByStaffId is recorded (e.g.
- * the table was served before this feature shipped), any staff may free it.
+ * Ownership gate — a non-admin staff may free the table if ANY of:
+ *   1. They are the recorded serving staff (table.currentSession.servedByStaffId).
+ *   2. No serving staff was recorded (admin-served unrouted order, legacy/seed
+ *      order without a `table` ref, or pre-feature data) — any staff may claim
+ *      it, otherwise the table could NEVER be freed by staff and would sit
+ *      occupied until an admin intervened.
+ *   3. They served ANY order in this dining session (Order.sessionId match) —
+ *      covers multi-staff tables where the recorded server is only the LAST
+ *      person who delivered, and legacy orders whose serve action couldn't
+ *      stamp the table.
+ * Admin can always force-free.
  */
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   try {
@@ -46,17 +54,29 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       return ok({ table, alreadyFree: true, message: 'Table is already free' });
     }
 
-    // Ownership: a non-admin staff may only free a table THEY served. The table's
-    // servedByStaffId is set when the staff serves an order for that session.
-    const servedBy = table.currentSession?.servedByStaffId;
-    if (
-      session.role === 'staff' &&
-      servedBy &&
-      String(servedBy) !== String(session.userId)
-    ) {
-      return forbidden(
-        'You did not serve this table — only the staff who served it can free it.',
-      );
+    if (session.role === 'staff') {
+      const servedBy = table.currentSession?.servedByStaffId;
+      const isRecordedServer = !!servedBy && String(servedBy) === String(session.userId);
+      const isUnclaimed = !servedBy;
+
+      let servedInSession = false;
+      if (!isRecordedServer && !isUnclaimed) {
+        // Rule 3: did THIS staff serve any order for this dining session?
+        // (Multi-staff tables, and orders whose serve couldn't stamp the table
+        // because the legacy order doc had no `table` reference.)
+        servedInSession =
+          (await Order.countDocuments({
+            sessionId: currentSessionId,
+            staffId: session.userId,
+            status: { $in: ['served', 'completed'] },
+          })) > 0;
+      }
+
+      if (!isRecordedServer && !isUnclaimed && !servedInSession) {
+        return forbidden(
+          'You did not serve this table — only the staff who served it can free it.',
+        );
+      }
     }
 
     // Close the dining session record (keep it for history). Set endedAt too

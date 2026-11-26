@@ -191,16 +191,31 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       // only they (or an admin) may later mark the table ready-to-free after
       // the customer pays. This ties the free-table action to the staff who
       // actually handed the food to the customer.
-      if (order.table && session.role === 'staff') {
+      // Match the table by _id OR by tableNumber: legacy/seeded order docs may
+      // have no `table` reference (only tableNumber) — without the fallback
+      // the stamp silently no-ops and NO staff can later free that table.
+      if (session.role === 'staff') {
         await Table.updateOne(
-          { _id: order.table, 'currentSession.sessionId': { $exists: true, $ne: '' } },
+          {
+            $or: [
+              ...(order.table ? [{ _id: order.table }] : []),
+              { number: order.tableNumber },
+            ],
+            'currentSession.sessionId': { $exists: true, $ne: '' },
+          },
           { $set: { 'currentSession.servedByStaffId': session.userId } },
         );
-      } else if (order.table && session.role === 'admin' && order.staffId) {
+      } else if (session.role === 'admin' && order.staffId) {
         // Admin serving on behalf of a routed staff: attribute the table to
         // that staff so they can still free it.
         await Table.updateOne(
-          { _id: order.table, 'currentSession.sessionId': { $exists: true, $ne: '' } },
+          {
+            $or: [
+              ...(order.table ? [{ _id: order.table }] : []),
+              { number: order.tableNumber },
+            ],
+            'currentSession.sessionId': { $exists: true, $ne: '' },
+          },
           { $set: { 'currentSession.servedByStaffId': order.staffId } },
         );
       }

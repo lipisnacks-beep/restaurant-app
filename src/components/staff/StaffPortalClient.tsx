@@ -17,6 +17,7 @@ interface Order {
   items: OrderItem[]; status: string; createdAt: string; readyAt?: string;
   acceptedAt?: string;
   servedAt?: string; customerName?: string; tip?: number; total?: number; paymentStatus?: string;
+  sessionId?: string; // dining session this order belongs to (for free-table ownership)
 }
 interface OccupiedTable {
   _id: string; number: number; name: string;
@@ -228,10 +229,35 @@ export default function StaffPortalClient() {
       String(t.currentSession.servedByStaffId) === myStaffId &&
       (t.currentSession?.sessionStatus === 'paid' || t.currentSession?.sessionStatus === 'completed'),
   );
-  // "Occupied" = everything else with a session (not yet paid, or served by a
-  // different staff). These show read-only so this staff still has situational
-  // awareness of the floor, but no Free Table button.
+  // "Occupied" = everything else with a session (still dining, or served by a
+  // different staff). These show read-only unless this staff can free them.
   const tablesOccupied = tables.filter((t) => !tablesToFree.includes(t));
+
+  // Dining sessions where THIS staff served at least one order (from the
+  // orders list the portal already polls). Used to grant the Free Table
+  // button on multi-staff tables where the recorded server is only the last
+  // person who delivered.
+  const myServedSessionIds = new Set(
+    orders.filter((o) => o.status === 'served' && o.sessionId).map((o) => o.sessionId as string),
+  );
+
+  /**
+   * Can THIS staff free the given occupied table? Mirrors the API gate:
+   *   1. recorded server (servedByStaffId) is me, in ANY session state —
+   *      active too (customer may settle cash at the counter without using
+   *      the in-app pay screen; previously the button was hidden then and the
+   *      staff had NO way to free the table they served);
+   *   2. no server recorded (admin-served unrouted order / legacy data) — any
+   *      staff may free it, otherwise nobody could;
+   *   3. I served any order in this dining session.
+   */
+  const canFreeTable = (t: OccupiedTable): boolean => {
+    const cs = t.currentSession;
+    if (!cs?.sessionId) return false;
+    if (!cs.servedByStaffId) return true; // unclaimed — any staff may free
+    if (String(cs.servedByStaffId) === myStaffId) return true; // my table
+    return myServedSessionIds.has(cs.sessionId); // I served part of this session
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-emerald-50 to-gray-50">
@@ -412,19 +438,19 @@ export default function StaffPortalClient() {
                   <Table2 className="w-4 h-4 text-amber-500" /> Occupied Tables ({tablesOccupied.length})
                 </h2>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {tablesOccupied.map((t) => {
-                    const iServed = !!t.currentSession?.servedByStaffId &&
-                      String(t.currentSession.servedByStaffId) === myStaffId;
-                    return (
-                      <TableCard
-                        key={t._id}
-                        table={t}
-                        busy={busy === t._id}
-                        onFree={() => freeTable(t)}
-                        canFree={iServed}
-                      />
-                    );
-                  })}
+                  {tablesOccupied.map((t) => (
+                    <TableCard
+                      key={t._id}
+                      table={t}
+                      busy={busy === t._id}
+                      onFree={() => freeTable(t)}
+                      // Free button for: my tables (ANY session state — the
+                      // customer may settle cash at the counter without using
+                      // the in-app pay screen), unclaimed tables, and sessions
+                      // where I served any order. Others stay read-only.
+                      canFree={canFreeTable(t)}
+                    />
+                  ))}
                 </div>
               </section>
             )}
