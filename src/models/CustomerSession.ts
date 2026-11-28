@@ -14,6 +14,25 @@ import mongoose, { Schema, Document, Types } from 'mongoose';
  */
 export type CustomerSessionStatus = 'active' | 'paid' | 'completed' | 'closed';
 
+/**
+ * Invoice delivery record (WhatsApp Cloud API). Persisted on the session so
+ * that delivery is idempotent and the customer UI can show the right state.
+ *
+ * This field MUST be declared on the schema: Mongoose's default `strict`
+ * mode silently drops writes to undeclared fields. Before this field was
+ * added, deliverSessionInvoice's $set writes were lost, the 'sent'
+ * idempotency check always read undefined, and invoices were re-attempted
+ * (or never recorded as sent) on every webhook hit.
+ */
+export type InvoiceDeliveryStatus = 'sent' | 'optin-needed' | 'failed' | 'not-configured' | 'skipped-no-mobile';
+
+export interface IInvoiceDelivery {
+  status: InvoiceDeliveryStatus;
+  at: Date;
+  error?: string;
+  wamid?: string;
+}
+
 export interface ICustomerSession extends Document {
   sessionId: string;           // unique token stored in the customer's cookie
   customer: Types.ObjectId;    // ref Customer
@@ -33,6 +52,7 @@ export interface ICustomerSession extends Document {
   serviceChargeAmount: number;
   tip: number;
   total: number;
+  invoiceDelivery?: IInvoiceDelivery;  // WhatsApp invoice send result (set by pay action + webhook)
   createdAt: Date;
   updatedAt: Date;
 }
@@ -61,6 +81,12 @@ const CustomerSessionSchema = new Schema<ICustomerSession>(
     serviceChargeAmount: { type: Number, default: 0, min: 0 },
     tip: { type: Number, default: 0, min: 0 },
     total: { type: Number, default: 0, min: 0 },
+    invoiceDelivery: {
+      status: { type: String, enum: ['sent', 'optin-needed', 'failed', 'not-configured', 'skipped-no-mobile'] },
+      at: { type: Date },
+      error: { type: String },
+      wamid: { type: String },
+    },
   },
   { timestamps: true }
 );

@@ -11,7 +11,7 @@ import type { RestaurantSettings } from '@/lib/settings.types';
 import {
   ShoppingCart, Plus, Minus, Trash2, UtensilsCrossed, Loader2, CheckCircle2,
   Receipt, Banknote, QrCode, CreditCard, Star, ChevronLeft, ChefHat, ConciergeBell,
-  Phone, User, Clock,
+  Phone, User, Clock, MessageCircle, FileText,
 } from 'lucide-react';
 
 interface MenuItem {
@@ -78,6 +78,11 @@ export default function CustomerApp() {
   const [tip, setTip] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'upi' | 'card'>('upi');
   const [checkingSession, setCheckingSession] = useState(true);
+  // Invoice delivery result from the pay action. Drives the message shown
+  // on the Thank You screen (sent / tap-to-receive-optin / unavailable).
+  const [invoiceDelivery, setInvoiceDelivery] = useState<
+    'sent' | 'optin-needed' | 'failed' | 'not-configured' | 'skipped-no-mobile' | 'pending'
+  >('pending');
 
   // 1) Hydrate the persisted cart + set table from URL.
   useEffect(() => {
@@ -210,13 +215,19 @@ export default function CustomerApp() {
   async function pay() {
     if (!activeOrder) return;
     setPaying(true);
-    const { data, error, ok } = await api<{ order: Order; grandTotal: number; paidOrders: string[] }>(
+    const { data, error, ok } = await api<{
+      order: Order;
+      grandTotal: number;
+      paidOrders: string[];
+      invoiceDelivery?: 'sent' | 'optin-needed' | 'failed' | 'not-configured' | 'skipped-no-mobile' | 'pending';
+    }>(
       `/api/orders/${activeOrder._id}`,
       { method: 'PATCH', body: JSON.stringify({ action: 'pay', paymentMethod, tip }) },
     );
     setPaying(false);
     if (!ok) { toast.error(error || 'Payment failed'); return; }
     setActiveOrder(data!.order);
+    setInvoiceDelivery(data!.invoiceDelivery || 'pending');
     setView('thankyou');
   }
 
@@ -322,7 +333,7 @@ export default function CustomerApp() {
         )}
 
         {view === 'thankyou' && activeOrder && (
-          <ThankYouView order={activeOrder} sessionOrders={sessionOrders} />
+          <ThankYouView order={activeOrder} sessionOrders={sessionOrders} invoiceDelivery={invoiceDelivery} />
         )}
       </main>
     </div>
@@ -938,7 +949,15 @@ function PayView({ order, sessionOrders, tip, setTip, method, setMethod, paying,
   );
 }
 
-function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: Order[] }) {
+function ThankYouView({
+  order,
+  sessionOrders,
+  invoiceDelivery,
+}: {
+  order: Order;
+  sessionOrders: Order[];
+  invoiceDelivery: 'sent' | 'optin-needed' | 'failed' | 'not-configured' | 'skipped-no-mobile' | 'pending';
+}) {
   const brand = useSettings();
   const [rating, setRating] = useState(0);
   const [foodRating, setFoodRating] = useState(0);
@@ -950,6 +969,18 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
   const [phase, setPhase] = useState<'form' | 'thanks' | 'closed'>('form');
   const [googleUrl, setGoogleUrl] = useState('');
   const [countdown, setCountdown] = useState(5);
+  // Business WhatsApp number (digits only) fetched once on mount so the
+  // opt-in button can build a wa.me link when Meta requires re-engagement.
+  const [waNumber, setWaNumber] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await api<{ number: string; configured: boolean }>('/api/whatsapp/business-number');
+      if (!cancelled && data?.number) setWaNumber(data.number);
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // ThankYouView recomputes grandTotal from per-order totals, which the pay
   // action mutates. Prefer the authoritative grandTotal from the pay API
@@ -1037,6 +1068,18 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
           Your payment of <strong>{formatCurrency(grandTotal)}</strong> is confirmed.
         </p>
       </div>
+
+      {/* Invoice delivery status card.
+          - 'sent': invoice was pushed to the customer's WhatsApp.
+          - 'optin-needed': Meta requires the customer to message the business
+            first (24h service window). Show a one-tap wa.me button whose
+            pre-filled message opens the window; our webhook then delivers
+            the invoice automatically — still free.
+          - 'not-configured': WHATSAPP_TOKEN / PHONE_NUMBER_ID not set in env.
+            Offer the self-download link instead.
+          - 'skipped-no-mobile': the session has no valid mobile on file.
+          - 'failed' / 'pending': generic fallback with the download link. */}
+      <InvoiceStatusCard status={invoiceDelivery} waNumber={waNumber} />
 
       {phase === 'form' && (
         <div className="card p-5 space-y-4">
@@ -1153,6 +1196,130 @@ function ThankYouView({ order, sessionOrders }: { order: Order; sessionOrders: O
           <a href="/" className="btn-ghost w-full">Back to home</a>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Invoice delivery status card — shown on the Thank You screen right under
+ * the payment-confirmed banner. Renders a different message + action for
+ * each delivery state returned by the pay action.
+ *
+ *   sent            → green "invoice sent to your WhatsApp" + link to view online
+ *   optin-needed    → amber "tap to receive" — opens wa.me with a pre-filled
+ *                     message; the customer sending it opens Meta's free 24h
+ *                     service window, after which our webhook delivers the
+ *                     invoice automatically (still free, no paid template).
+ *   not-configured  → grey "WhatsApp not set up yet" + online-view link
+ *   skipped-no-mobile→ grey "no mobile on file" + online-view link
+ *   failed/pending  → grey fallback + online-view link
+ */
+type InvoiceDeliveryState =
+  | 'sent' | 'optin-needed' | 'failed' | 'not-configured' | 'skipped-no-mobile' | 'pending';
+
+function InvoiceStatusCard({
+  status,
+  waNumber,
+}: {
+  status: InvoiceDeliveryState;
+  waNumber: string;
+}) {
+  // The online invoice link is built server-side because it needs a signed
+  // token (JWT_SECRET). The customer's session cookie authorises the mint.
+  const [invoiceUrl, setInvoiceUrl] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await api<{ url: string }>('/api/invoice/my-url');
+      if (!cancelled && data?.url) setInvoiceUrl(data.url);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Pre-filled WhatsApp opt-in message. Sending it opens the free 24h
+  // customer-service window; our /api/whatsapp/webhook then matches the
+  // sender's mobile to this paid session and delivers the invoice PDF.
+  // (Matching is by mobile number, not message text, so the wording is free.)
+  const optinHref = waNumber
+    ? `https://wa.me/${waNumber}?text=${encodeURIComponent(
+        'Hi, I just paid my bill. Please send my invoice.',
+      )}`
+    : '';
+
+  // ---- sent ----
+  if (status === 'sent') {
+    return (
+      <div className="card p-4 flex items-start gap-3 bg-emerald-50/60 border-emerald-200">
+        <CheckCircle2 className="w-5 h-5 text-emerald-600 mt-0.5 shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-emerald-800">Invoice sent to your WhatsApp</p>
+          <p className="text-xs text-emerald-700 mt-0.5">
+            Check your WhatsApp for the bill PDF. You can also view it online below.
+          </p>
+          {invoiceUrl && (
+            <a href={invoiceUrl} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 hover:text-emerald-900 mt-2">
+              <FileText className="w-3.5 h-3.5" /> View invoice online
+            </a>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- optin-needed ----
+  if (status === 'optin-needed') {
+    return (
+      <div className="card p-4 flex items-start gap-3 bg-amber-50/60 border-amber-200">
+        <MessageCircle className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-amber-800">Tap to receive your invoice on WhatsApp</p>
+          <p className="text-xs text-amber-700 mt-0.5">
+            WhatsApp requires you to message us once before we can send the bill. Tap the button
+            below — it opens WhatsApp with a ready message. Just hit send, and your invoice
+            arrives within seconds.
+          </p>
+          {optinHref ? (
+            <a href={optinHref} target="_blank" rel="noopener noreferrer"
+              className="btn-primary w-full mt-3 flex items-center justify-center gap-2">
+              <MessageCircle className="w-4 h-4" /> Send me the invoice
+            </a>
+          ) : (
+            <p className="text-xs text-amber-700 mt-2">
+              WhatsApp number not configured yet. Please ask a staff member for your bill.
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- not-configured / skipped-no-mobile / failed / pending ----
+  const noConfig = status === 'not-configured';
+  const noMobile = status === 'skipped-no-mobile';
+  const heading = noConfig
+    ? 'View your bill online'
+    : noMobile
+      ? 'View your bill online'
+      : 'View your bill online';
+  const detail = noConfig
+    ? "WhatsApp invoice delivery isn't set up yet. You can still view your bill online."
+    : noMobile
+      ? "We don't have a WhatsApp number on file for you, so the bill wasn't sent there. You can view it online below."
+      : "Your invoice will be available online. If it doesn't arrive on WhatsApp shortly, you can view it below.";
+  return (
+    <div className="card p-4 flex items-start gap-3 bg-gray-50 border-gray-200">
+      <FileText className="w-5 h-5 text-gray-500 mt-0.5 shrink-0" />
+      <div className="flex-1">
+        <p className="text-sm font-semibold text-gray-700">{heading}</p>
+        <p className="text-xs text-gray-500 mt-0.5">{detail}</p>
+        {invoiceUrl && (
+          <a href={invoiceUrl} target="_blank" rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-brand-600 hover:text-brand-800 mt-2">
+            <FileText className="w-3.5 h-3.5" /> View invoice online
+          </a>
+        )}
+      </div>
     </div>
   );
 }

@@ -8,6 +8,7 @@ import { resolveSessionForRoles, resolveCustomerSessionId } from '@/lib/auth';
 import { ok, fail, unauthorized, forbidden, serverError } from '@/lib/utils';
 import { assignPendingOrdersToChefs } from '@/lib/chefDispatch';
 import { assignReadyOrdersToStaff } from '@/lib/staffDispatch';
+import { deliverSessionInvoice } from '@/lib/whatsapp';
 
 export const dynamic = 'force-dynamic';
 
@@ -438,6 +439,24 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         paymentStatus: 'unpaid',
       });
 
+      // Trigger WhatsApp invoice delivery now that the session is fully paid.
+      // deliverSessionInvoice is idempotent and never throws into the payment
+      // flow — a failed/needed-optin result is returned to the customer UI so
+      // it can show the right message (sent / tap-to-receive / unavailable).
+      // We only attempt this when the WHOLE session is settled (no remaining
+      // unpaid orders), otherwise the invoice would be partial.
+      let invoiceDelivery: 'sent' | 'optin-needed' | 'failed' | 'not-configured' | 'skipped-no-mobile' | 'pending' = 'pending';
+      if (remaining === 0 && custSession) {
+        try {
+          invoiceDelivery = await deliverSessionInvoice(order.sessionId);
+        } catch (err) {
+          // Never let invoice delivery break the payment confirmation — the
+          // customer already paid. Log and surface a 'failed' status instead.
+          console.error('[pay] invoice delivery failed:', err);
+          invoiceDelivery = 'failed';
+        }
+      }
+
       return ok({
         order,
         paidOrders: sessionOrders.map((o) => o._id),
@@ -454,6 +473,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         taxAmount: taxSum,
         serviceChargeAmount: serviceSum,
         tip: tipAmount,
+        invoiceDelivery,
       });
     }
     case 'rate': {
