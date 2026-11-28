@@ -23,11 +23,11 @@ Before clicking Deploy, scroll down to **"Environment Variables"** and add each 
 
 | Name | Value | Environments |
 |---|---|---|
-| `MONGODB_URI` | `mongodb+srv://lipisnacks_db_user:FvI56MGM36UYSSOr@cluster0.3d3qxj8.mongodb.net/restaurant?retryWrites=true&w=majority` | Production, Preview, Development |
+| `MONGODB_URI` | `mongodb+srv://YOUR_ATLAS_USER:YOUR_ATLAS_PASSWORD@cluster0.YOUR_CLUSTER.mongodb.net/restaurant?retryWrites=true&w=majority` | Production, Preview, Development |
 | `CLOUDINARY_CLOUD_NAME` | `jj7yxhr5` | Production, Preview, Development |
-| `CLOUDINARY_API_KEY` | `388693268456166` | Production, Preview, Development |
-| `CLOUDINARY_API_SECRET` | `ptk1zcooc8k3JT9NaxgKFZK93_8` | Production, Preview, Development |
-| `JWT_SECRET` | `lipisnacks-restaurant-jwt-secret-2026-very-secure-string-9876543210` | Production, Preview, Development |
+| `CLOUDINARY_API_KEY` | `YOUR_CLOUDINARY_API_KEY` | Production, Preview, Development |
+| `CLOUDINARY_API_SECRET` | `YOUR_CLOUDINARY_API_SECRET` | Production, Preview, Development |
+| `JWT_SECRET` | `YOUR_LONG_RANDOM_JWT_SECRET` | Production, Preview, Development |
 | `NEXT_PUBLIC_BASE_URL` | (leave empty for now — set in Step 4) | Production |
 | `GOOGLE_REVIEW_URL` | `https://search.google.com/local/writereview?placeid=YOUR_PLACE_ID` | Production, Preview |
 

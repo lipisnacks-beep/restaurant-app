@@ -132,10 +132,10 @@ restaurant-app/
 
    | Key | Value |
    |---|---|
-   | `MONGODB_URI` | `mongodb+srv://lipisnacks_db_user:FvI56MGM36UYSSOr@cluster0.3d3qxj8.mongodb.net/restaurant?retryWrites=true&w=majority` |
+   | `MONGODB_URI` | `mongodb+srv://YOUR_ATLAS_USER:YOUR_ATLAS_PASSWORD@cluster0.YOUR_CLUSTER.mongodb.net/restaurant?retryWrites=true&w=majority` |
    | `CLOUDINARY_CLOUD_NAME` | `jj7yxhr5` |
-   | `CLOUDINARY_API_KEY` | `388693268456166` |
-   | `CLOUDINARY_API_SECRET` | `ptk1zcooc8k3JT9NaxgKFZK93_8` |
+   | `CLOUDINARY_API_KEY` | `YOUR_CLOUDINARY_API_KEY` |
+   | `CLOUDINARY_API_SECRET` | `YOUR_CLOUDINARY_API_SECRET` |
    | `JWT_SECRET` | a long random string |
    | `NEXT_PUBLIC_BASE_URL` | `https://<your-vercel-app>.vercel.app` (set after first deploy) |
    | `GOOGLE_REVIEW_URL` | `https://search.google.com/local/writereview?placeid=YOUR_PLACE_ID` |
